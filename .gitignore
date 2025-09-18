@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.pytest_cache/
+
+# Environments
+.venv/
+venv/
+
+# Local artifacts
+logs/
+models/
+artifacts/
+data_cache/
+walk_forward/
+equity_curve.png
+*.parquet
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Secrets
+.env
