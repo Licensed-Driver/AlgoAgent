@@ -1,4 +1,4 @@
-# single_ticker_rl_trader
+# AlgoAgent
 
 A production‑ready template for training a single‑ticker reinforcement learning (RL) trader
 entirely via backtesting. It pulls OHLCV data from the Alpaca API, adds many technical
