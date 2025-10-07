@@ -164,7 +164,7 @@ class SingleTickerEnv(gym.Env):
         else: equity_after = equity_before
 
         done = False
-        info = {"equity":equity_after}
+        info = {"equity":equity_after, "action": action}
 
         # Advance time
         self._i += 1

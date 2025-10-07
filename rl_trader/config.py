@@ -40,7 +40,7 @@ class FeeConfig:
 
 @dataclass
 class PPOConfig:
-    total_timesteps: int = 1_000_000
+    total_timesteps: int = 2_000_000
     learning_rate: float = 3e-4
     gamma: float = 0.999
     gae_lambda: float = 0.95
@@ -51,7 +51,7 @@ class PPOConfig:
     batch_size: int = 256
     n_epochs: int = 10
     eval_freq: int = 50_000
-    device: str = "cuda"  # 'cpu' or 'cuda'
+    device: str = "cpu"  # 'cpu' or 'cuda'
     sub_procs: int = 8
 
 @dataclass

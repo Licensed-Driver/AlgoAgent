@@ -280,12 +280,19 @@ def main():
                       reward_mode=args.reward_mode,
                       vecnorm_path="logs/saves/vecnormalize.pkl")
 
-    plt.figure()
-    eq.plot(title=f"Equity Curve (eval) — {args.symbol}")
-    plt.xlabel("Time"); plt.ylabel("Equity ($)")
+    plt.figure(figsize=(10, 5))
+    plt.scatter(eq.index, eq.values, label=f"Equity Curve (eval) — {args.symbol}", s=5)
+    plt.xlabel("Time")
+    plt.ylabel("Equity ($)")
+    plt.title("Episode Rewards Over Time")
+    plt.legend()
+    plt.tight_layout()
     eq_path = outdir / "equity_curve_eval.png"
     plt.savefig(eq_path, dpi=160, bbox_inches="tight")
+    plt.close()
     print(f"Saved equity curve → {eq_path}")
+
+
     # Also save raw equity series for inspection
     eq_csv_path = outdir / "equity_curve_eval.csv"
     eq.to_csv(eq_csv_path)
