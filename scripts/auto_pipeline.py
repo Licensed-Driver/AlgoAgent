@@ -1,7 +1,10 @@
 import argparse
+import glob
+import os
 from pathlib import Path
 import pandas as pd
 import matplotlib.pyplot as plt
+import json
 
 from rl_trader.data import fetch_alpaca_bars
 from rl_trader.features import build_feature_matrix
@@ -11,6 +14,9 @@ from rl_trader.agent import train_ppo
 from rl_trader.backtest import run_backtest
 from rl_trader.walkforward import walk_forward
 from rl_trader.metrics import basic_stats
+
+from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.results_plotter import load_results, ts2xy, plot_results
 
 def main():
     ap = argparse.ArgumentParser(description="End-to-end RL trading pipeline (fetch → train → evaluate → walk-forward)")
@@ -48,6 +54,7 @@ def main():
     ap.add_argument("--n_steps", type=int, default=None)
     ap.add_argument("--batch_size", type=int, default=None)
     ap.add_argument("--n_epochs", type=int, default=None)
+    ap.add_argument("--sub_procs", type=int, default=None)
     # Env (optional CLI overrides)
     ap.add_argument("--max_position_pct", type=float, default=None)
 
@@ -58,6 +65,13 @@ def main():
     ap.add_argument("--stride_days", type=int, default=7)
     ap.add_argument("--skip_walk_forward", action="store_true", help="Skip walk-forward stage")
     ap.add_argument("--max_splits", type=int, default=None, help="Limit number of walk-forward splits")
+    ap.add_argument("--min_episode_len", type=int, default=None)
+    ap.add_argument("--max_episode_len", type=int, default=None)
+    ap.add_argument("--spread_std_bps", type=float, default=None)
+    ap.add_argument("--slippage_std_bps", type=float, default=None)
+    ap.add_argument("--price_jitter_bps", type=float, default=None)
+    ap.add_argument("--do_nothing_penalty", type=float, default=None)
+    ap.add_argument("--double_action_penalty", type=float, default=None)
     args = ap.parse_args()
 
     # Load defaults from config.py, then let CLI override
@@ -75,6 +89,13 @@ def main():
     if args.slippage_bps is None: args.slippage_bps = env_cfg.slippage_bps
     if args.reward_mode is None: args.reward_mode = env_cfg.reward_mode
     if args.max_position_pct is None: args.max_position_pct = env_cfg.max_position_pct
+    if args.min_episode_len is None: args.min_episode_len = env_cfg.min_episode_len
+    if args.max_episode_len is None: args.max_episode_len = env_cfg.max_episode_len
+    if args.spread_std_bps is None: args.spread_std_bps = env_cfg.spread_std_bps
+    if args.slippage_std_bps is None: args.slippage_std_bps = env_cfg.slippage_std_bps
+    if args.price_jitter_bps is None: args.price_jitter_bps = env_cfg.price_jitter_bps
+    if args.do_nothing_penalty is None: args.do_nothing_penalty = env_cfg.do_nothing_penalty
+    if args.double_action_penalty is None: args.double_action_penalty = env_cfg.double_action_penalty
     if args.reward_scale is None:
         rs = env_cfg.reward_scale
         if isinstance(rs, str):
@@ -102,6 +123,7 @@ def main():
     if args.eval_freq is None: args.eval_freq = ppo_cfg.eval_freq
     if args.learning_rate is None: args.learning_rate = ppo_cfg.learning_rate
     if args.device is None: args.device = ppo_cfg.device
+    if args.sub_procs is None: args.sub_procs = ppo_cfg.sub_procs
     # Extra PPO hparams (use if present in config)
     args.gamma = getattr(args, "gamma", None)
     args.gae_lambda = getattr(args, "gae_lambda", None)
@@ -159,6 +181,15 @@ def main():
     X_tr = X.iloc[:split].copy()
     X_tr_s, stats = scale_features(X_tr)
 
+    # Save scaled feature set for backtesting
+    os.makedirs("logs/saves/", exist_ok=True)
+    with open("logs/saves/feature_stats.json", "w") as f:
+        stats_json = {
+            "mean": stats["mean"].to_dict(),
+            "std": stats["std"].to_dict()
+        }
+        json.dump(stats_json, f, indent=2)
+
     fee_kwargs = dict(
         model=args.fee_model,
         per_share=args.per_share,
@@ -169,15 +200,29 @@ def main():
         taf_fee_per_share=args.taf_fee_per_share,
     )
 
-    def make_env():
-        return SingleTickerEnv(prices_tr, X_tr_s,
+    def make_env(rank, seed=42):
+        def _thunk():
+            env = SingleTickerEnv(prices_tr, X_tr_s,
                                initial_equity=args.initial_equity,
                                spread_bps=args.spread_bps,
                                slippage_bps=args.slippage_bps,
                                max_position_pct=args.max_position_pct,
                                reward_mode=args.reward_mode,
                                reward_scale=(args.initial_equity if args.reward_scale is None else args.reward_scale),
-                               fee_kwargs=fee_kwargs)
+                               fee_kwargs=fee_kwargs,
+                               min_episode_len=args.min_episode_len,
+                               max_episode_len=args.max_episode_len,
+                               spread_std_bps=args.spread_std_bps,
+                               slippage_std_bps=args.slippage_std_bps,
+                               price_jitter_bps=args.price_jitter_bps,
+                               do_nothing_penalty=args.do_nothing_penalty,
+                               double_action_penalty=args.double_action_penalty)
+            env.reset(seed + rank)
+            log_dir = "logs/monitor/"
+            os.makedirs(log_dir, exist_ok=True)
+            env = Monitor(env, filename=os.path.join(log_dir, f"env_{rank}"))
+            return env
+        return _thunk
     model = train_ppo(make_env,
                       total_timesteps=args.total_timesteps,
                       learning_rate=args.learning_rate,
@@ -192,7 +237,30 @@ def main():
                       log_dir="./logs/auto",
                       seed=args.seed,
                       device=args.device,
-                      eval_freq=args.eval_freq)
+                      eval_freq=args.eval_freq,
+                      sub_procs=args.sub_procs)
+    
+    # Plot episode rewards
+    files = glob.glob("logs/monitor/*.monitor.csv")
+    monitor_dfs = [pd.read_csv(f, skiprows=1) for f in files]  # skip comment header
+    monitor_df = pd.concat(monitor_dfs)
+
+    # sort by wall time to merge multiple envs chronologically
+    monitor_df = monitor_df.sort_values("t")
+
+    # Print latest stats
+    print(monitor_df.tail())
+
+    # Plot rolling mean
+    plt.figure(figsize=(10, 5))
+    plt.plot(monitor_df["t"], monitor_df["r"].rolling(20).mean(), label="20-episode rolling mean")
+    plt.xlabel("Timesteps")
+    plt.ylabel("Episode Reward")
+    plt.title("Episode Rewards Over Time")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig("artifacts/episode_reward.png", dpi=200, bbox_inches="tight")
+    plt.close()
 
     model_dir = Path("models"); model_dir.mkdir(exist_ok=True)
     model_path = model_dir / "ppo_auto_single_ticker.zip"
@@ -203,12 +271,15 @@ def main():
     df_eval = df.iloc[split:].copy()
     X_eval = X.iloc[split:].copy()
     X_eval_s = apply_stats(X_eval, stats)
+
     eq = run_backtest(model, df_eval['Close'], X_eval_s,
                       initial_equity=args.initial_equity,
                       spread_bps=args.spread_bps,
                       slippage_bps=args.slippage_bps,
                       max_position_pct=args.max_position_pct,
-                      reward_mode=args.reward_mode)
+                      reward_mode=args.reward_mode,
+                      vecnorm_path="logs/saves/vecnormalize.pkl")
+
     plt.figure()
     eq.plot(title=f"Equity Curve (eval) — {args.symbol}")
     plt.xlabel("Time"); plt.ylabel("Equity ($)")
@@ -220,7 +291,6 @@ def main():
     eq.to_csv(eq_csv_path)
     print(f"Saved equity series → {eq_csv_path}")
     stats = basic_stats(eq)
-    import json
     with open(outdir / "eval_stats.json", "w") as f:
         json.dump(stats, f, indent=2)
     print("Saved eval stats →", outdir / "eval_stats.json")
@@ -251,7 +321,6 @@ def main():
             row = {"split": i}
             row.update(basic_stats(series))
             metrics_rows.append(row)
-        import pandas as pd
         pd.DataFrame(metrics_rows).to_csv(wf_dir / "metrics.csv", index=False)
         print(f"Saved {len(eq_list)} walk-forward equity curves and metrics.csv to {wf_dir}")
     else:

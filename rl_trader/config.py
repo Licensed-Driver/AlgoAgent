@@ -3,9 +3,9 @@ from typing import Optional
 
 @dataclass
 class DataConfig:
-    symbol: str
-    start: str
-    end: str
+    symbol: str = "--NVDA"
+    start: str = "--2020-01-01"
+    end: str = "--2025-01-01"
     timeframe: str = "1Min"
     limit: Optional[int] = None
     cache_dir: str = "data_cache"
@@ -20,6 +20,13 @@ class EnvConfig:
     reward_mode: str = "pnl"  # 'pnl', 'pnl_raw', 'logpnl', 'sharpe_step'
     # Can be a float-like string (e.g., "10000"), "initial_equity", or "none"/"null"
     reward_scale: str = "initial_equity"
+    min_episode_len: int=512
+    max_episode_len: int=2048
+    spread_std_bps: float=0.5
+    slippage_std_bps: float=0.3
+    price_jitter_bps:float=0
+    do_nothing_penalty:float=0
+    double_action_penalty:float=-0.1
 
 @dataclass
 class FeeConfig:
@@ -33,18 +40,19 @@ class FeeConfig:
 
 @dataclass
 class PPOConfig:
-    total_timesteps: int = 200_000
-    learning_rate: float = 0.1
-    gamma: float = 0.99
+    total_timesteps: int = 1_000_000
+    learning_rate: float = 3e-4
+    gamma: float = 0.999
     gae_lambda: float = 0.95
     clip_range: float = 0.2
-    ent_coef: float = 0.01
+    ent_coef: float = 0.0001
     vf_coef: float = 0.5
-    n_steps: int = 4096
-    batch_size: int = 512
-    n_epochs: int = 20
-    eval_freq: int = 10000
-    device: str = "cpu"  # 'cpu' or 'cuda'
+    n_steps: int = 2048
+    batch_size: int = 256
+    n_epochs: int = 10
+    eval_freq: int = 50_000
+    device: str = "cuda"  # 'cpu' or 'cuda'
+    sub_procs: int = 8
 
 @dataclass
 class WalkConfig:
@@ -52,5 +60,5 @@ class WalkConfig:
     valid_days: int = 7
     test_days: int = 7
     stride_days: int = 7
-    skip_walk_forward: bool = False
+    skip_walk_forward: bool = True
     max_splits: Optional[int] = None

@@ -57,7 +57,7 @@ def _month_bounds(ts: pd.Timestamp) -> tuple[pd.Timestamp, pd.Timestamp]:
     else:
         next_start = start.replace(month=ts.month + 1)
     end = next_start - pd.Timedelta(seconds=1)
-    return start.tz_localize("UTC"), end.tz_localize("UTC")
+    return start.tz_convert("UTC"), end.tz_convert("UTC")
 
 def _iterate_months(start: str, end: str):
     s = pd.Timestamp(start, tz="UTC")

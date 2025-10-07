@@ -33,10 +33,18 @@ def walk_forward(
         x_va_s = apply_stats(x_va, stats)
         x_te_s = apply_stats(x_te, stats)
 
-        def make_env_tr():
-            return SingleTickerEnv(p_tr, x_tr_s, **env_kwargs)
-        def make_env_va():
-            return SingleTickerEnv(p_va, x_va_s, **env_kwargs)
+        def make_env_tr(rank, seed=42):
+            def _thunk():
+                env = SingleTickerEnv(p_tr, x_tr_s, **env_kwargs)
+                env.reset(rank + seed)
+                return env
+            return _thunk
+        def make_env_va(rank, seed=42):
+            def _thunk():
+                env = SingleTickerEnv(p_va, x_va_s, **env_kwargs).reset(seed=seed)
+                env.reset(rank + seed)
+                return env
+            return _thunk
 
         model = train_ppo(
             make_env_tr,

@@ -1,5 +1,5 @@
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 from stable_baselines3.common.callbacks import EvalCallback, StopTrainingOnNoModelImprovement
 import os
 from .utils import set_seed
@@ -25,12 +25,14 @@ def train_ppo(
     vec_clip_obs: float = 10.0,
     vec_clip_reward: float = 10.0,
     device: str = "cpu",
+    sub_procs: int = 1,
 ):
     os.makedirs(log_dir, exist_ok=True)
     if seed is not None:
         set_seed(seed)
 
-    env = DummyVecEnv([make_env_fn])
+    if(sub_procs == 1): env = DummyVecEnv([make_env_fn(1)])
+    else: env = SubprocVecEnv([make_env_fn(i) for i in range(sub_procs)])
     if vec_norm_obs or vec_norm_reward:
         env = VecNormalize(
             env,
@@ -63,5 +65,5 @@ def train_ppo(
     model.learn(total_timesteps=total_timesteps, callback=callback)
     # If using VecNormalize, persist statistics for later reuse
     if isinstance(env, VecNormalize):
-        env.save(os.path.join(log_dir, "vecnormalize.pkl"))
+        env.save(os.path.join("logs/saves", "vecnormalize.pkl"))
     return model
