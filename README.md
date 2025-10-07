@@ -83,6 +83,7 @@ need precise replication for production.
 ## One-command end-to-end run (pure profit reward)
 
 ```bash
-python -m scripts.auto_pipeline --symbol AAPL --start 2024-01-01 --end 2024-06-01 --timeframe 1Min   --total_timesteps 200000 --train_days 30 --valid_days 7 --test_days 7 --stride_days 7
+python -m scripts.auto_pipeline --symbol AAPL --start 2023-01-01 --end 2025-01-01
 ```
 This will: fetch data → build features → train PPO on the first 90% (reward = **raw profit scaled by initial equity**) → evaluate on the last 10% → run a walk-forward study and save equity curves under `artifacts/`.
+WARNING: This command will pull and cache 2 years of 1Min resolution ticker data from the AAPL stock, which may take up a non-negligible amount of space. Just please be aware of that.
