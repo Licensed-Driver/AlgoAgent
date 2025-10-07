@@ -17,16 +17,16 @@ class EnvConfig:
     slippage_bps: float = 0.0
     initial_equity: float = 5000.0
     max_position_pct: float = 0.5  # long-only, cannot exceed equity
-    reward_mode: str = "pnl"  # 'pnl', 'pnl_raw', 'logpnl', 'sharpe_step'
+    reward_mode: str = "pnl_raw"  # 'pnl', 'pnl_raw', 'logpnl', 'sharpe_step'
     # Can be a float-like string (e.g., "10000"), "initial_equity", or "none"/"null"
-    reward_scale: str = "initial_equity"
+    reward_scale: str = "none"  # pnl_raw with no scaling to test reward norm across envs
     min_episode_len: int=512
     max_episode_len: int=2048
     spread_std_bps: float=0.5
     slippage_std_bps: float=0.3
     price_jitter_bps:float=0
     do_nothing_penalty:float=0
-    double_action_penalty:float=-0.1
+    double_action_penalty:float=0
 
 @dataclass
 class FeeConfig:
@@ -51,6 +51,8 @@ class PPOConfig:
     batch_size: int = 256
     n_epochs: int = 10
     eval_freq: int = 50_000
+    vec_norm_reward: bool = True
+    vec_norm_obs: bool = True
     device: str = "cpu"  # 'cpu' or 'cuda'
     sub_procs: int = 8
 

@@ -18,6 +18,9 @@ def _to_timeframe(tf: str):
         return TimeFrame.Day
     raise ValueError(f"Unsupported timeframe: {tf}")
 
+def main():
+    fetch_alpaca_bars("NVDA", "2020-01-01", "2020-01-31", "1Min")
+
 def fetch_alpaca_bars(symbol: str, start: str, end: str, timeframe: str = "1Min") -> pd.DataFrame:
     load_dotenv()
     key = os.getenv("ALPACA_API_KEY")
@@ -30,8 +33,8 @@ def fetch_alpaca_bars(symbol: str, start: str, end: str, timeframe: str = "1Min"
     client = StockHistoricalDataClient(api_key=key, secret_key=secret)
     req = StockBarsRequest(
         symbol_or_symbols=symbol,
-        start=pd.Timestamp(start, tz="UTC"),
-        end=pd.Timestamp(end, tz="UTC"),
+        start=pd.Timestamp(start, tz="EST"),
+        end=pd.Timestamp(end, tz="EST"),
         timeframe=_to_timeframe(timeframe),
         feed='sip',  # best available
         limit=None,
@@ -47,7 +50,22 @@ def fetch_alpaca_bars(symbol: str, start: str, end: str, timeframe: str = "1Min"
         "open":"Open","high":"High","low":"Low","close":"Close","volume":"Volume","trade_count":"Trades","vwap":"VWAP"
     })
     bars = bars[["Open","High","Low","Close","Volume","VWAP"]].sort_index()
-    return bars
+    # Expand indices to have all the timesteps
+    filled_index = pd.date_range(start=bars.index.min().tz_convert("EST"), end=pd.Timestamp(end, tz="EST")+pd.DateOffset(days=1)-pd.DateOffset(seconds=1), freq="1min")
+    # Create expanded df for it
+    expanded_bars = bars.reindex(filled_index)
+    # Find which rows were added
+    new_rows = ~expanded_bars.index.isin(bars.index)
+    # Forward fill all the close value that are empty since no movement means no bar info
+    prev_close = expanded_bars['Close'].ffill()
+    filled_bars = expanded_bars.copy()
+    # Set all price values to close of the last active minute since it wouldn't have changed
+    filled_bars.loc[new_rows, ["Open","High","Low","Close"]] = prev_close[new_rows].values.reshape(-1,1)
+    # Set volume to 0
+    filled_bars.loc[new_rows,"Volume"] = 0
+    # Back fill any missing bars before the first trade of the month and filling any vwap values left over (since VWAP doesn't change if price doesn't)
+    filled_bars = filled_bars.bfill().ffill()
+    return filled_bars
 
 def _month_bounds(ts: pd.Timestamp) -> tuple[pd.Timestamp, pd.Timestamp]:
     start = ts.normalize().replace(day=1)
@@ -57,16 +75,15 @@ def _month_bounds(ts: pd.Timestamp) -> tuple[pd.Timestamp, pd.Timestamp]:
     else:
         next_start = start.replace(month=ts.month + 1)
     end = next_start - pd.Timedelta(seconds=1)
-    return start.tz_convert("UTC"), end.tz_convert("UTC")
+    return start.tz_convert("EST"), end.tz_convert("EST")
 
 def _iterate_months(start: str, end: str):
-    s = pd.Timestamp(start, tz="UTC")
-    e = pd.Timestamp(end, tz="UTC")
-    cur = s
-    while cur <= e:
-        m_start, m_end = _month_bounds(cur)
-        yield max(m_start, s), min(m_end, e)
-        cur = (m_end + pd.Timedelta(seconds=1))
+    s = pd.Timestamp(start, tz="EST")
+    e = pd.Timestamp(end, tz="EST")
+    m_start, m_end = _month_bounds(s)
+    while m_end <= e:
+        yield m_start, m_end
+        m_start, m_end = m_start + pd.DateOffset(months=1), m_start + pd.DateOffset(months=2) - pd.DateOffset(seconds=1)
 
 def load_or_fetch_monthly(symbol: str, start: str, end: str, timeframe: str = "1Min", cache_dir: str | Path = "data_cache") -> pd.DataFrame:
     """
@@ -84,12 +101,7 @@ def load_or_fetch_monthly(symbol: str, start: str, end: str, timeframe: str = "1
         if fpath.exists():
             df = pd.read_parquet(fpath)
         else:
-            df = fetch_alpaca_bars(symbol, str(m_start.tz_convert(None)), str(m_end.tz_convert(None)), timeframe)
-            # Ensure UTC index in cache
-            if df.index.tz is None:
-                df.index = df.index.tz_localize("UTC")
-            else:
-                df = df.tz_convert("UTC")
+            df = fetch_alpaca_bars(symbol, str(m_start), str(m_end), timeframe)
             df.to_parquet(fpath)
         monthly_dfs.append(df)
 
@@ -99,7 +111,18 @@ def load_or_fetch_monthly(symbol: str, start: str, end: str, timeframe: str = "1
     # De-duplicate overlapping boundaries
     out = out[~out.index.duplicated(keep="last")]
     # Clip to exact [start, end]
-    s = pd.Timestamp(start, tz="UTC")
-    e = pd.Timestamp(end, tz="UTC")
+    s = pd.Timestamp(start, tz="EST")
+    e = pd.Timestamp(end, tz="EST")
     out = out.loc[(out.index >= s) & (out.index <= e)]
     return out
+
+def validate_data_cache(symbol: str, start:str, end:str):
+    s = pd.Timestamp(start)
+    e = pd.Timestamp(end)
+    curr = s
+    while(curr.month != e.month):
+        validating = pd.read_parquet(f"data_cache/{symbol.capitalize()}/{symbol.capitalize()}_{curr.year}-{curr.month:02}_1Min.parquet")
+        cross_reference = fetch_alpaca_bars(symbol, f"{curr.year}-{curr.month}-01", f"{curr.year}-{curr.month}-{curr.days_in_month}")
+
+if __name__=="__main__":
+    main()

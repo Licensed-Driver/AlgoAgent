@@ -23,7 +23,7 @@ def run_backtest(
         spread_bps=spread_bps,
         slippage_bps=slippage_bps,
         max_position_pct=max_position_pct,
-        reward_mode=reward_mode,
+        reward_mode=reward_mode
     )
 
     # If you trained with VecNormalize, load stats and wrap for eval

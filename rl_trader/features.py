@@ -1,3 +1,5 @@
+import datetime
+import math
 import pandas as pd
 import numpy as np
 import ta
@@ -45,6 +47,11 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # Price levels
     out["hl_range"] = out["High"] - out["Low"]
     out["oc_range"] = (out["Close"] - out["Open"]).abs()
+
+    # Cyclical Time
+    def index_to_time(input_timestamp:pd.Timestamp):
+        return -math.cos((float(input_timestamp.hour) * float(60.0)) + float(input_timestamp.minute))
+    out["time"] = out.index.map(mapper=index_to_time, na_action=None)
 
     # Replace infs, forward-fill missing values, then fill any residuals with 0
     out = out.replace([np.inf, -np.inf], np.nan).ffill().fillna(0.0)

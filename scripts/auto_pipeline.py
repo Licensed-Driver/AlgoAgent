@@ -55,6 +55,8 @@ def main():
     ap.add_argument("--batch_size", type=int, default=None)
     ap.add_argument("--n_epochs", type=int, default=None)
     ap.add_argument("--sub_procs", type=int, default=None)
+    ap.add_argument("--vec_norm_reward", type=bool, default=None)
+    ap.add_argument("--vec_norm_obs", type=bool, default=None)
     # Env (optional CLI overrides)
     ap.add_argument("--max_position_pct", type=float, default=None)
 
@@ -124,6 +126,8 @@ def main():
     if args.learning_rate is None: args.learning_rate = ppo_cfg.learning_rate
     if args.device is None: args.device = ppo_cfg.device
     if args.sub_procs is None: args.sub_procs = ppo_cfg.sub_procs
+    if args.vec_norm_reward is None: args.vec_norm_reward = ppo_cfg.vec_norm_reward
+    if args.vec_norm_obs is None: args.vec_norm_obs = ppo_cfg.vec_norm_obs
     # Extra PPO hparams (use if present in config)
     args.gamma = getattr(args, "gamma", None)
     args.gae_lambda = getattr(args, "gae_lambda", None)
@@ -165,7 +169,7 @@ def main():
         from rl_trader.data import fetch_alpaca_bars
         df = fetch_alpaca_bars(args.symbol, args.start, args.end, args.timeframe)
     if df.index.tz is not None:
-        df = df.tz_convert("UTC")
+        df = df.tz_convert("EST")
     raw_path = outdir / f"data_{args.symbol}_{args.start}_{args.end}_{args.timeframe}.parquet"
     df.to_parquet(raw_path)
     print(f"Wrote {raw_path} with {len(df)} rows.")
@@ -238,7 +242,9 @@ def main():
                       seed=args.seed,
                       device=args.device,
                       eval_freq=args.eval_freq,
-                      sub_procs=args.sub_procs)
+                      sub_procs=args.sub_procs,
+                      vec_norm_obs=args.vec_norm_obs,
+                      vec_norm_reward=args.vec_norm_reward)
     
     # Plot episode rewards
     files = glob.glob("logs/monitor/*.monitor.csv")
@@ -268,11 +274,11 @@ def main():
     print(f"Saved model → {model_path}")
 
     print("=== 4) Evaluating on last 10% of the window ===")
-    df_eval = df.iloc[split:].copy()
+    prices_eval = prices.iloc[split:].copy()
     X_eval = X.iloc[split:].copy()
     X_eval_s = apply_stats(X_eval, stats)
 
-    eq = run_backtest(model, df_eval['Close'], X_eval_s,
+    eq = run_backtest(model, prices_eval, X_eval_s,
                       initial_equity=args.initial_equity,
                       spread_bps=args.spread_bps,
                       slippage_bps=args.slippage_bps,

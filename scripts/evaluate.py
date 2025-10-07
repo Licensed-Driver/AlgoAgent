@@ -1,4 +1,5 @@
 import argparse
+import os
 import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
@@ -15,15 +16,15 @@ def main():
     ap.add_argument("--model", required=True)           # SB3 .zip
     ap.add_argument("--feature_stats", required=False)  # JSON/PKL from training
     ap.add_argument("--vecnorm", required=False)        # vecnorm.pkl from training
-    ap.add_argument("--spread_bps", type=float)
-    ap.add_argument("--slippage_bps", type=float)
-    ap.add_argument("--initial_equity", type=float)
-    ap.add_argument("--reward_mode")
+    ap.add_argument("--spread_bps", type=float, default=None)
+    ap.add_argument("--slippage_bps", type=float, default=None)
+    ap.add_argument("--initial_equity", type=float, default=None)
+    ap.add_argument("--reward_mode", default=None)
     args = ap.parse_args()
 
     df = pd.read_parquet(args.data).sort_index()
     if df.index.tz is not None:
-        df = df.tz_convert("UTC")
+        df = df.tz_convert("EST")
 
     prices = df["Close"]
     X = build_feature_matrix(df)
@@ -69,9 +70,10 @@ def main():
     stats = basic_stats(eq)
     print("Stats:", stats)
 
+    os.makedirs("logs/evalutaions", exist_ok=True)
     # Plot + save
-    out_png = Path("equity_curve.png")
-    out_csv = Path("equity_curve.csv")
+    out_png = Path("logs/evalutaions/equity_curve.png")
+    out_csv = Path("logs/evalutaions/equity_curve.csv")
     plt.figure(figsize=(10,5))
     eq.plot(title="Equity Curve")
     plt.xlabel("Time")

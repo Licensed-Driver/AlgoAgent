@@ -20,7 +20,7 @@ def train_ppo(
     eval_env_fn=None,
     eval_freq: int = 10_000,
     seed: int | None = None,
-    vec_norm_obs: bool = False,
+    vec_norm_obs: bool = True,
     vec_norm_reward: bool = True,
     vec_clip_obs: float = 10.0,
     vec_clip_reward: float = 10.0,

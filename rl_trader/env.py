@@ -104,6 +104,10 @@ class SingleTickerEnv(gym.Env):
         bid, ask = self._best_bid_ask(mid)
         reward=0
 
+        # If the day ended then we sell
+        if((self.features.iloc[self._i].iloc[-1] < 0.507538) and (self.features.iloc[self._i].iloc[-1] > 0.496217)):
+            action = 2
+
         # Get action: 0=buy, 1=hold, 2=sell
         match action:
             case 0:

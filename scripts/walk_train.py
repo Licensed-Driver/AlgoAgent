@@ -71,7 +71,7 @@ def main():
         df = load_or_fetch_monthly(args.symbol, args.start, args.end, args.timeframe, cache_dir=args.cache_dir)
 
     if df.index.tz is not None:
-        df = df.tz_convert("UTC")
+        df = df.tz_convert("EST")
     prices = df["Close"]
     X = build_feature_matrix(df)
 

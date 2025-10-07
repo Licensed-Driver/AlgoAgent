@@ -93,7 +93,7 @@ def main():
         assert args.symbol and args.start and args.end, "Provide --data or (symbol, start, end)"
         df = load_or_fetch_monthly(args.symbol, args.start, args.end, args.timeframe, cache_dir=args.cache_dir)
 
-    df = df.tz_convert("UTC") if df.index.tz is not None else df
+    df = df.tz_convert("EST") if df.index.tz is not None else df
     X = build_feature_matrix(df)
     prices = df["Close"]
     Xs, stats = scale_features(X)
