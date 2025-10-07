@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "RL PPO agent for single-ticker trading with Alpaca data, bid/ask spread, and IBKR fees."
 readme = "README.md"
 requires-python = ">=3.10"
-authors = [{name = "You"}]
+authors = [{name = "Layne Pitman"}]
 
 [tool.setuptools.packages.find]
 where = ["rl_trader"]
