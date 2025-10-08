@@ -1,10 +1,12 @@
 import os
 from pathlib import Path
 import pandas as pd
+import pandas_market_calendars as pmc
 from dotenv import load_dotenv
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
+from pandas.tseries.holiday import USFederalHolidayCalendar
 
 def _to_timeframe(tf: str):
     tf = tf.lower()
@@ -50,9 +52,11 @@ def fetch_alpaca_bars(symbol: str, start: str, end: str, timeframe: str = "1Min"
         "open":"Open","high":"High","low":"Low","close":"Close","volume":"Volume","trade_count":"Trades","vwap":"VWAP"
     })
     bars = bars[["Open","High","Low","Close","Volume","VWAP"]].sort_index()
-    # Expand indices to have all the timesteps
-    filled_index = pd.date_range(start=bars.index.min().tz_convert("EST"), end=pd.Timestamp(end, tz="EST")+pd.DateOffset(days=1)-pd.DateOffset(seconds=1), freq="1min")
-    # Create expanded df for it
+    # Create a df index series that accounts for all timesteps within trading hour
+    market_calendar = pmc.get_calendar("NYSE")
+    market_schedule = market_calendar.schedule(start_date=bars.index.min(), end_date=bars.index.max(), tz="America/New_York")
+    filled_index = pmc.date_range(schedule=market_schedule, frequency="1min")
+    # Reindex the fetched data to expand it to all trading minutes
     expanded_bars = bars.reindex(filled_index)
     # Find which rows were added
     new_rows = ~expanded_bars.index.isin(bars.index)
@@ -65,6 +69,13 @@ def fetch_alpaca_bars(symbol: str, start: str, end: str, timeframe: str = "1Min"
     filled_bars.loc[new_rows,"Volume"] = 0
     # Back fill any missing bars before the first trade of the month and filling any vwap values left over (since VWAP doesn't change if price doesn't)
     filled_bars = filled_bars.bfill().ffill()
+
+    # Split the df into a multiindex df for better episode control
+    date_index = filled_bars.index.date
+    time_index = filled_bars.index.time
+    filled_bars = filled_bars.set_index([date_index, time_index])
+    filled_bars.index.names = ["date", "time"]
+
     return filled_bars
 
 def _month_bounds(ts: pd.Timestamp) -> tuple[pd.Timestamp, pd.Timestamp]:
@@ -110,10 +121,6 @@ def load_or_fetch_monthly(symbol: str, start: str, end: str, timeframe: str = "1
     out = pd.concat(monthly_dfs).sort_index()
     # De-duplicate overlapping boundaries
     out = out[~out.index.duplicated(keep="last")]
-    # Clip to exact [start, end]
-    s = pd.Timestamp(start, tz="EST")
-    e = pd.Timestamp(end, tz="EST")
-    out = out.loc[(out.index >= s) & (out.index <= e)]
     return out
 
 def validate_data_cache(symbol: str, start:str, end:str):

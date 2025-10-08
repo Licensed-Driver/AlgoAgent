@@ -1,3 +1,4 @@
+import datetime
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
@@ -13,7 +14,8 @@ class SingleTickerEnv(gym.Env):
                  spread_bps: float = 2.0, slippage_bps: float = 0.0, max_position_pct: float = 1.0,
                  reward_mode: str = "pnl_raw", reward_scale: float | None = None,
                  fee_kwargs: dict | None = None, min_episode_len: int=512, max_episode_len: int=2048,
-                 spread_std_bps: float=0.5, slippage_std_bps: float=0.3, price_jitter_bps:float=0, do_nothing_penalty: float=0.0, double_action_penalty:float=0.0):
+                 spread_std_bps: float=0.5, slippage_std_bps: float=0.3, price_jitter_bps:float=0,
+                 do_nothing_penalty: float=0.0, double_action_penalty:float=0.0):
         super().__init__()
         assert prices.index.equals(features.index), "Prices and features must be aligned index"
         self.prices = prices.astype(float)  # Close as midprice
@@ -42,12 +44,13 @@ class SingleTickerEnv(gym.Env):
         self.price_jitter_bps = float(price_jitter_bps)
 
         # State
-        self._i = 0
+        self._time = 0
         self._start = 0
         self._end = 0
         self.cash = self.initial_equity
         self.shares = 0.0
         self.prev_equity = self.initial_equity
+        self._days = self.prices.index.get_level_values("date").unique()
 
         # RNG holder
         self.np_random = None
@@ -57,25 +60,34 @@ class SingleTickerEnv(gym.Env):
         # make per-env RNG
         self.np_random, _ = gym.utils.seeding.np_random(seed)
 
-        # choose random episode window
-        total_len = len(self.prices)
+        # choose random amount of days for episode
+        total_len = len(self._days)
         ep_len = int(self.np_random.integers(self.min_episode_len, self.max_episode_len + 1))
         if ep_len >= total_len:
             ep_len = total_len - 1
         self._start = int(self.np_random.integers(0, total_len - ep_len))
         self._end = self._start + ep_len
 
-        self._i = self._start
+        self._time = 0
         self.cash = self.initial_equity
         self.shares = 0.0
         self.prev_equity = self.initial_equity
 
         obs = self._obs()
-        info = {"seed": seed, "start": self._start, "end": self._end}
+        info = {"seed": seed, "start": self.prices.index.levels[0][self._start], "end": self.prices.index.levels[0][self._end]}
         return obs, info
+    
+    def _get_day_idx(self, idx: int) -> datetime.date:
+        return self._days[idx]
+
+    def _get_time_idx(self, idx: int) -> datetime.time:
+        return self.prices.index.levels[1][idx]
+    
+    def _get_price(self, i, j):
+        return self.prices.loc[self._get_day_idx(i),self._get_time_idx(j)]
         
-    def _price_at(self, idx: int) -> float:
-        mid = float(self.prices.iloc[idx])
+    def _price_at(self) -> float:
+        mid = float(self._get_price(self._start, self._time))
         if self.price_jitter_bps > 0.0:
             mid *= 1.0 + 1e-4 * self.price_jitter_bps * self.np_random.normal()
         return mid
@@ -94,19 +106,15 @@ class SingleTickerEnv(gym.Env):
         return bid - slip, ask + slip
 
     def _obs(self):
-        x = self.features.iloc[self._i].to_numpy(dtype=np.float32)
+        x = self.features.loc[self._get_day_idx(self._start), self._get_time_idx(self._time)].to_numpy(dtype=np.float32)
         has_position = True if self.shares > 0 else False
         return np.concatenate([x, [has_position]]).astype(np.float32)
 
     def step(self, action):
         # Current state
-        mid = float(self.prices.iloc[self._i])
+        mid = float(self._get_price(self._start, self._time))
         bid, ask = self._best_bid_ask(mid)
         reward=0
-
-        # If the day ended then we sell
-        if((self.features.iloc[self._i].iloc[-1] < 0.507538) and (self.features.iloc[self._i].iloc[-1] > 0.496217)):
-            action = 2
 
         # Get action: 0=buy, 1=hold, 2=sell
         match action:
@@ -118,8 +126,7 @@ class SingleTickerEnv(gym.Env):
                     reward = self.do_nothing_penalty
             case 1:
                 target_shares = self.shares
-                mid_next = float(self.prices.iloc[self._i])
-                equity_after = self.cash + self.shares * self._price_at(self._i)
+                equity_after = self.cash + self.shares * self._price_at()
             
                 reward = step_reward(self.prev_equity, equity_after, self.reward_mode, self.reward_scale) + self.do_nothing_penalty
             case 2:
@@ -161,7 +168,7 @@ class SingleTickerEnv(gym.Env):
                 self.cash += (proceeds - fee)
                 self.shares -= shares_to_sell
 
-            mid_now = self._price_at(self._i)
+            mid_now = self._price_at()
             equity_after = self.cash + self.shares * mid_now
             
             reward = step_reward(self.prev_equity, equity_after, self.reward_mode, self.reward_scale)
@@ -170,9 +177,15 @@ class SingleTickerEnv(gym.Env):
         done = False
         info = {"equity":equity_after, "action": action}
 
-        # Advance time
-        self._i += 1
-        if self._i >= self._end:
+        # If the day is over, reset _time and advance the day
+        if(self._time >= self.prices.loc[self._get_day_idx(self._start)].nunique()-1):
+            self._time = 0
+            self._start += 1
+        else:
+            self._time += 1
+
+        # Indicate that this is our last step if last day and last minute        
+        if((self._time >= self.prices.loc[self._get_day_idx(self._start)].nunique()-1) and self._start >= self._end):
             done = True
 
         self.prev_equity = equity_after

@@ -23,8 +23,6 @@ def main():
     args = ap.parse_args()
 
     df = pd.read_parquet(args.data).sort_index()
-    if df.index.tz is not None:
-        df = df.tz_convert("EST")
 
     prices = df["Close"]
     X = build_feature_matrix(df)
@@ -75,7 +73,7 @@ def main():
     out_png = Path("logs/evalutaions/equity_curve.png")
     out_csv = Path("logs/evalutaions/equity_curve.csv")
     plt.figure(figsize=(10,5))
-    eq.plot(title="Equity Curve")
+    eq.plot(title="Equity Curve", fontsize=7)
     plt.xlabel("Time")
     plt.ylabel("Equity ($)")
     plt.tight_layout()

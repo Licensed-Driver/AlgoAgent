@@ -17,11 +17,11 @@ class EnvConfig:
     slippage_bps: float = 0.0
     initial_equity: float = 5000.0
     max_position_pct: float = 0.5  # long-only, cannot exceed equity
-    reward_mode: str = "pnl_raw"  # 'pnl', 'pnl_raw', 'logpnl', 'sharpe_step'
+    reward_mode: str = "pnl"  # 'pnl', 'pnl_raw', 'logpnl', 'sharpe_step'
     # Can be a float-like string (e.g., "10000"), "initial_equity", or "none"/"null"
     reward_scale: str = "none"  # pnl_raw with no scaling to test reward norm across envs
-    min_episode_len: int=512
-    max_episode_len: int=2048
+    min_episode_len: int=3
+    max_episode_len: int=5
     spread_std_bps: float=0.5
     slippage_std_bps: float=0.3
     price_jitter_bps:float=0
@@ -40,7 +40,7 @@ class FeeConfig:
 
 @dataclass
 class PPOConfig:
-    total_timesteps: int = 2_000_000
+    total_timesteps: int = 750_000
     learning_rate: float = 3e-4
     gamma: float = 0.999
     gae_lambda: float = 0.95

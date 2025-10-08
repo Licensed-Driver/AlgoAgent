@@ -1,10 +1,11 @@
+import datetime
 import numpy as np
 import pandas as pd
 
 def _periods_per_year(index: pd.DatetimeIndex) -> float:
     if len(index) < 2:
         return 252.0
-    delta = (index[1] - index[0]).total_seconds()
+    delta = (pd.Timestamp(index[1]) - pd.Timestamp(index[0])).total_seconds()
     # crude heuristics
     if delta <= 120:  # ~1-2 minutes
         return 252.0 * 390.0  # trading minutes/year
@@ -40,7 +41,8 @@ def cagr(equity: pd.Series) -> float:
     if equity.empty:
         return 0.0
     total_return = equity.iloc[-1] / equity.iloc[0] - 1.0
-    days = (equity.index[-1] - equity.index[0]).days
+    print(pd.Timestamp(equity.index[-1]))
+    days = (pd.Timestamp(equity.index[-1]) - pd.Timestamp(equity.index[0])).days
     if days <= 0:
         return float(total_return)
     years = days / 365.25

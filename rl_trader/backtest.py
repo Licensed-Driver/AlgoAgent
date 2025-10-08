@@ -45,7 +45,7 @@ def run_backtest(
             if dones[0]:   # VecEnv has a single "done" flag; truncation info may be in infos
                 break
             eq_hist.append(info0.get("equity", np.nan))
-            ts_index.append(prices.index[env._i - 1])
+            ts_index.append(env._get_day_idx(env._start).strftime("%d-%m-%Y") + " " + env._get_time_idx(env._time).strftime("%H:%M:%S"))
 
         return pd.Series(eq_hist, index=pd.Index(ts_index, name=prices.index.name))
 
@@ -62,6 +62,6 @@ def run_backtest(
             if(done or truncated):
                 break
             eq_hist.append(info.get("equity", np.nan))
-            ts_index.append(prices.index[env._i - 1])
+            ts_index.append(env._get_day_idx(env._start).strftime("%d-%m-%Y") + " " + env._get_time_idx(env._time).strftime("%H:%M:%S"))
 
         return pd.Series(eq_hist, index=pd.Index(ts_index, name=prices.index.name))

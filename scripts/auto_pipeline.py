@@ -165,11 +165,10 @@ def main():
         from rl_trader.data import load_or_fetch_monthly
         df = load_or_fetch_monthly(args.symbol, args.start, args.end, args.timeframe, cache_dir=args.cache_dir)
     except Exception:
+        raise(Exception("BALLS"))
         # Fallback to direct fetch if loader import fails for any reason
         from rl_trader.data import fetch_alpaca_bars
         df = fetch_alpaca_bars(args.symbol, args.start, args.end, args.timeframe)
-    if df.index.tz is not None:
-        df = df.tz_convert("EST")
     raw_path = outdir / f"data_{args.symbol}_{args.start}_{args.end}_{args.timeframe}.parquet"
     df.to_parquet(raw_path)
     print(f"Wrote {raw_path} with {len(df)} rows.")
@@ -179,10 +178,10 @@ def main():
     prices = df['Close']
 
     print("=== 3) Train on first 90% (avoid leakage) — raw profit scaled ===")
-    n = len(df)
-    split = int(n * 0.9)
-    prices_tr = prices.iloc[:split].copy()
-    X_tr = X.iloc[:split].copy()
+    n = prices.index.get_level_values("date").nunique()
+    split = prices.index.get_level_values("date").unique()[int(n * 0.9)]
+    prices_tr = prices.loc[:split].copy()
+    X_tr = X.loc[:split].copy()
     X_tr_s, stats = scale_features(X_tr)
 
     # Save scaled feature set for backtesting
@@ -274,8 +273,8 @@ def main():
     print(f"Saved model → {model_path}")
 
     print("=== 4) Evaluating on last 10% of the window ===")
-    prices_eval = prices.iloc[split:].copy()
-    X_eval = X.iloc[split:].copy()
+    prices_eval = prices.loc[split:].copy()
+    X_eval = X.loc[split:].copy()
     X_eval_s = apply_stats(X_eval, stats)
 
     eq = run_backtest(model, prices_eval, X_eval_s,

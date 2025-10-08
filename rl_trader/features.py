@@ -49,8 +49,9 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     out["oc_range"] = (out["Close"] - out["Open"]).abs()
 
     # Cyclical Time
-    def index_to_time(input_timestamp:pd.Timestamp):
-        return -math.cos((float(input_timestamp.hour) * float(60.0)) + float(input_timestamp.minute))
+    def index_to_time(input_timestamp: tuple[pd.Timestamp, pd.Timestamp]):
+        timestamp = input_timestamp[1]
+        return -math.cos((float(timestamp.hour) * float(60.0)) + float(timestamp.minute))
     out["time"] = out.index.map(mapper=index_to_time, na_action=None)
 
     # Replace infs, forward-fill missing values, then fill any residuals with 0
