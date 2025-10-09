@@ -1,5 +1,7 @@
 from dataclasses import dataclass
+import math
 from typing import Optional
+from collections.abc import Callable
 
 @dataclass
 class DataConfig:
@@ -41,7 +43,8 @@ class FeeConfig:
 @dataclass
 class PPOConfig:
     total_timesteps: int = 2_000_000
-    learning_rate: float = 3e-4
+    # Either a float or lambda that takes one argument (progress remaining 1-0) and returns the learning rate. Make sure you aren't dumb like me and don't do sqrt(0)
+    learning_rate: Callable[[float], float] = lambda x: 3e-4*x
     gamma: float = 0.999
     gae_lambda: float = 0.95
     clip_range: float = 0.2

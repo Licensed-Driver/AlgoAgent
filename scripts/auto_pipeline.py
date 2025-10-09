@@ -14,6 +14,7 @@ from rl_trader.agent import train_ppo
 from rl_trader.backtest import run_backtest
 from rl_trader.walkforward import walk_forward
 from rl_trader.metrics import basic_stats
+from collections.abc import Callable
 
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.results_plotter import load_results, ts2xy, plot_results
