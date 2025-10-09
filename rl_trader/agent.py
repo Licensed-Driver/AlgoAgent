@@ -31,7 +31,7 @@ def train_ppo(
     if seed is not None:
         set_seed(seed)
 
-    if(sub_procs == 1): env = DummyVecEnv([make_env_fn(1)])
+    if(sub_procs == 1): env = DummyVecEnv([make_env_fn(0)])
     else: env = SubprocVecEnv([make_env_fn(i) for i in range(sub_procs)])
     if vec_norm_obs or vec_norm_reward:
         env = VecNormalize(
@@ -65,5 +65,6 @@ def train_ppo(
     model.learn(total_timesteps=total_timesteps, callback=callback)
     # If using VecNormalize, persist statistics for later reuse
     if isinstance(env, VecNormalize):
+        os.makedirs("logs/saves", exist_ok=True)
         env.save(os.path.join("logs/saves", "vecnormalize.pkl"))
     return model

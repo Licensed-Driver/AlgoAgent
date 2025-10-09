@@ -178,8 +178,10 @@ def main():
     prices = df['Close']
 
     print("=== 3) Train on first 90% (avoid leakage) — raw profit scaled ===")
-    n = prices.index.get_level_values("date").nunique()
-    split = prices.index.get_level_values("date").unique()[int(n * 0.9)]
+    date_index = prices.index.get_level_values("date")
+    unique_dates = date_index.unique()
+    n = len(unique_dates)
+    split = unique_dates[min(max(int(n * 0.9), 1), n - 1)]
     prices_tr = prices.loc[:split].copy()
     X_tr = X.loc[:split].copy()
     X_tr_s, stats = scale_features(X_tr)
@@ -247,25 +249,19 @@ def main():
     
     # Plot episode rewards
     files = glob.glob("logs/monitor/*.monitor.csv")
-    monitor_dfs = [pd.read_csv(f, skiprows=1) for f in files]  # skip comment header
-    monitor_df = pd.concat(monitor_dfs)
-
-    # sort by wall time to merge multiple envs chronologically
-    monitor_df = monitor_df.sort_values("t")
-
-    # Print latest stats
-    print(monitor_df.tail())
-
-    # Plot rolling mean
-    plt.figure(figsize=(10, 5))
-    plt.plot(monitor_df["t"], monitor_df["r"].rolling(20).mean(), label="20-episode rolling mean")
-    plt.xlabel("Timesteps")
-    plt.ylabel("Episode Reward")
-    plt.title("Episode Rewards Over Time")
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig("artifacts/episode_reward.png", dpi=200, bbox_inches="tight")
-    plt.close()
+    if files:
+        monitor_dfs = [pd.read_csv(f, skiprows=1) for f in files]  # skip comment header
+        monitor_df = pd.concat(monitor_dfs).sort_values("t")
+        print(monitor_df.tail())
+        plt.figure(figsize=(10, 5))
+        plt.plot(monitor_df["t"], monitor_df["r"].rolling(20).mean(), label="20-episode rolling mean")
+        plt.xlabel("Timesteps")
+        plt.ylabel("Episode Reward")
+        plt.title("Episode Rewards Over Time")
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig("artifacts/episode_reward.png", dpi=200, bbox_inches="tight")
+        plt.close()
 
     model_dir = Path("models"); model_dir.mkdir(exist_ok=True)
     model_path = model_dir / "ppo_auto_single_ticker.zip"
@@ -277,13 +273,14 @@ def main():
     X_eval = X.loc[split:].copy()
     X_eval_s = apply_stats(X_eval, stats)
 
+    vecnorm_path = Path("logs/saves/vecnormalize.pkl")
     eq = run_backtest(model, prices_eval, X_eval_s,
                       initial_equity=args.initial_equity,
                       spread_bps=args.spread_bps,
                       slippage_bps=args.slippage_bps,
                       max_position_pct=args.max_position_pct,
                       reward_mode=args.reward_mode,
-                      vecnorm_path="logs/saves/vecnormalize.pkl")
+                      vecnorm_path=str(vecnorm_path) if vecnorm_path.exists() else None)
 
     plt.figure(figsize=(10, 5))
     plt.scatter(eq.index, eq.values, label=f"Equity Curve (eval) — {args.symbol}", s=5)

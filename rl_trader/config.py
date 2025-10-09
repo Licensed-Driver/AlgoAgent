@@ -40,7 +40,7 @@ class FeeConfig:
 
 @dataclass
 class PPOConfig:
-    total_timesteps: int = 750_000
+    total_timesteps: int = 2_000_000
     learning_rate: float = 3e-4
     gamma: float = 0.999
     gae_lambda: float = 0.95

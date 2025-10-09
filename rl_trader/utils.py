@@ -15,12 +15,12 @@ def scale_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, dict]:
     stats = {"mean": df.mean(), "std": df.std().replace(0, 1.0)}
     z = (df - stats["mean"]) / stats["std"]
     z = z.replace([np.inf, -np.inf], np.nan).fillna(0.0)
-    return z, stats
+    return z.astype(np.float32), stats
 
 def apply_stats(df: pd.DataFrame, stats: dict) -> pd.DataFrame:
     z = (df - stats["mean"]) / stats["std"]
     z = z.replace([np.inf, -np.inf], np.nan).fillna(0.0)
-    return z
+    return z.astype(np.float32)
 
 def rolling_windows(df: pd.DataFrame, train_days: int, valid_days: int, test_days: int, stride_days: int):
     idx = df.index.sort_values()
