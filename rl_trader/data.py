@@ -117,7 +117,7 @@ def load_or_fetch_monthly(symbol: str, start: str, end: str, timeframe: str = "1
         monthly_dfs.append(df)
 
     if not monthly_dfs:
-        raise RuntimeError("No data loaded for the requested period")
+        raise RuntimeError("No data loaded for the requested period.")
     out = pd.concat(monthly_dfs).sort_index()
     # De-duplicate overlapping boundaries
     out = out[~out.index.duplicated(keep="last")]

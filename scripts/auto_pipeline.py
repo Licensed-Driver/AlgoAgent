@@ -126,7 +126,7 @@ def main():
     if args.eval_freq is None: args.eval_freq = ppo_cfg.eval_freq
     if args.learning_rate is None: args.learning_rate = ppo_cfg.learning_rate
     if args.device is None: args.device = ppo_cfg.device
-    if args.sub_procs is None: args.sub_procs = ppo_cfg.sub_procs
+    if args.sub_procs is None: args.sub_procs = ppo_cfg.n_envs
     if args.vec_norm_reward is None: args.vec_norm_reward = ppo_cfg.vec_norm_reward
     if args.vec_norm_obs is None: args.vec_norm_obs = ppo_cfg.vec_norm_obs
     # Extra PPO hparams (use if present in config)
@@ -144,7 +144,7 @@ def main():
     if args.ent_coef is None: args.ent_coef = ppo_cfg.ent_coef
     if args.vf_coef is None: args.vf_coef = ppo_cfg.vf_coef
     if args.n_steps is None: args.n_steps = ppo_cfg.n_steps
-    if args.batch_size is None: args.batch_size = ppo_cfg.batch_size
+    if args.batch_size is None: args.batch_size = ppo_cfg.minibatch_size
     if args.n_epochs is None: args.n_epochs = ppo_cfg.n_epochs
     # Walk-forward defaults
     if args.train_days is None: args.train_days = walk_cfg.train_days
@@ -166,7 +166,7 @@ def main():
         from rl_trader.data import load_or_fetch_monthly
         df = load_or_fetch_monthly(args.symbol, args.start, args.end, args.timeframe, cache_dir=args.cache_dir)
     except Exception:
-        raise(Exception("BALLS"))
+        raise(Exception("Data Fetch Exception."))
         # Fallback to direct fetch if loader import fails for any reason
         from rl_trader.data import fetch_alpaca_bars
         df = fetch_alpaca_bars(args.symbol, args.start, args.end, args.timeframe)
@@ -176,7 +176,7 @@ def main():
 
     print("=== 2) Building features ===")
     X = build_feature_matrix(df)
-    prices = df['Close']
+    prices = df[['Close', 'Open']]
 
     print("=== 3) Train on first 90% (avoid leakage) — raw profit scaled ===")
     date_index = prices.index.get_level_values("date")
@@ -186,6 +186,9 @@ def main():
     prices_tr = prices.loc[:split].copy()
     X_tr = X.loc[:split].copy()
     X_tr_s, stats = scale_features(X_tr)
+    prices_eval = prices.loc[split:].copy()
+    X_eval = X.loc[split:].copy()
+    X_eval_s = apply_stats(X_eval, stats)
 
     # Save scaled feature set for backtesting
     os.makedirs("logs/saves/", exist_ok=True)
@@ -214,7 +217,7 @@ def main():
                                slippage_bps=args.slippage_bps,
                                max_position_pct=args.max_position_pct,
                                reward_mode=args.reward_mode,
-                               reward_scale=(args.initial_equity if args.reward_scale is None else args.reward_scale),
+                               reward_scale=args.reward_mode,
                                fee_kwargs=fee_kwargs,
                                min_episode_len=args.min_episode_len,
                                max_episode_len=args.max_episode_len,
@@ -229,6 +232,24 @@ def main():
             env = Monitor(env, filename=os.path.join(log_dir, f"env_{rank}"))
             return env
         return _thunk
+    def make_eval_env():
+        env = SingleTickerEnv(prices_eval, X_eval_s,
+                              initial_equity=args.initial_equity,
+                              spread_bps=args.spread_bps,
+                              slippage_bps=args.slippage_bps,
+                              max_position_pct=args.max_position_pct,
+                              reward_mode=args.reward_mode,
+                              reward_scale=args.reward_mode,
+                              fee_kwargs=fee_kwargs,
+                              min_episode_len=args.min_episode_len,
+                              max_episode_len=args.max_episode_len,
+                              spread_std_bps=args.spread_std_bps,
+                              slippage_std_bps=args.slippage_std_bps,
+                              price_jitter_bps=args.price_jitter_bps,
+                              do_nothing_penalty=args.do_nothing_penalty,
+                              double_action_penalty=args.double_action_penalty)
+        env.reset(args.seed if args.seed is not None else 0)
+        return env
     model = train_ppo(make_env,
                       total_timesteps=args.total_timesteps,
                       learning_rate=args.learning_rate,
@@ -246,7 +267,8 @@ def main():
                       eval_freq=args.eval_freq,
                       sub_procs=args.sub_procs,
                       vec_norm_obs=args.vec_norm_obs,
-                      vec_norm_reward=args.vec_norm_reward)
+                      vec_norm_reward=args.vec_norm_reward,
+                      eval_env_fn=make_eval_env)
     
     # Plot episode rewards
     files = glob.glob("logs/monitor/*.monitor.csv")
@@ -270,10 +292,6 @@ def main():
     print(f"Saved model → {model_path}")
 
     print("=== 4) Evaluating on last 10% of the window ===")
-    prices_eval = prices.loc[split:].copy()
-    X_eval = X.loc[split:].copy()
-    X_eval_s = apply_stats(X_eval, stats)
-
     vecnorm_path = Path("logs/saves/vecnormalize.pkl")
     eq = run_backtest(model, prices_eval, X_eval_s,
                       initial_equity=args.initial_equity,
@@ -284,7 +302,8 @@ def main():
                       vecnorm_path=str(vecnorm_path) if vecnorm_path.exists() else None)
 
     plt.figure(figsize=(10, 5))
-    plt.scatter(eq.index, eq.values, label=f"Equity Curve (eval) — {args.symbol}", s=5)
+    #plt.scatter(eq.index, eq.values, label=f"Equity Curve (eval) — {args.symbol}", s=5)
+    eq.plot()
     plt.xlabel("Time")
     plt.ylabel("Equity ($)")
     plt.title("Episode Rewards Over Time")

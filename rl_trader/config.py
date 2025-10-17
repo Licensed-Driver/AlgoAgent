@@ -21,7 +21,7 @@ class EnvConfig:
     max_position_pct: float = 0.5  # long-only, cannot exceed equity
     reward_mode: str = "pnl"  # 'pnl', 'pnl_raw', 'logpnl', 'sharpe_step'
     # Can be a float-like string (e.g., "10000"), "initial_equity", or "none"/"null"
-    reward_scale: str = "none"  # pnl_raw with no scaling to test reward norm across envs
+    reward_scale: str = "1000"
     min_episode_len: int=3
     max_episode_len: int=5
     spread_std_bps: float=0.5
@@ -42,22 +42,22 @@ class FeeConfig:
 
 @dataclass
 class PPOConfig:
-    total_timesteps: int = 2_000_000
+    total_timesteps: int = 10_000_000
     # Either a float or lambda that takes one argument (progress remaining 1-0) and returns the learning rate. Make sure you aren't dumb like me and don't do sqrt(0)
-    learning_rate: Callable[[float], float] = lambda x: 3e-4*x
+    learning_rate: Callable[[float], float] = lambda x: 3e-4*math.sqrt(x) if x>0 else 0 
     gamma: float = 0.999
     gae_lambda: float = 0.95
     clip_range: float = 0.2
-    ent_coef: float = 0.0001
+    ent_coef: float = 1e-4
     vf_coef: float = 0.5
-    n_steps: int = 2048
-    batch_size: int = 256
-    n_epochs: int = 10
-    eval_freq: int = 50_000
+    n_steps: int = 8192
+    minibatch_size: int = 512
+    n_epochs: int = 8
+    eval_freq: int = 10_000_000
     vec_norm_reward: bool = True
     vec_norm_obs: bool = True
     device: str = "cpu"  # 'cpu' or 'cuda'
-    sub_procs: int = 8
+    n_envs: int = 8
 
 @dataclass
 class WalkConfig:

@@ -7,7 +7,7 @@ def run_backtest(
     model,
     prices: pd.Series,
     features: pd.DataFrame,
-    initial_equity: float = 10_000.0,
+    initial_equity: float = 5_000.0,
     spread_bps: float = 2.0,
     slippage_bps: float = 0.0,
     max_position_pct: float = 1.0,

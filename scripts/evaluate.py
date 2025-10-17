@@ -24,7 +24,7 @@ def main():
 
     df = pd.read_parquet(args.data).sort_index()
 
-    prices = df["Close"]
+    prices = df[["Close", "Open"]]
     X = build_feature_matrix(df)
 
     # Apply saved feature scaling stats

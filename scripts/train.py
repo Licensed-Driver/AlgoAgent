@@ -129,7 +129,7 @@ def main():
     if args.ent_coef is None: args.ent_coef = ppo_cfg.ent_coef
     if args.vf_coef is None: args.vf_coef = ppo_cfg.vf_coef
     if args.n_steps is None: args.n_steps = ppo_cfg.n_steps
-    if args.batch_size is None: args.batch_size = ppo_cfg.batch_size
+    if args.batch_size is None: args.batch_size = ppo_cfg.minibatch_size
     if args.n_epochs is None: args.n_epochs = ppo_cfg.n_epochs
 
     model = train_ppo(
