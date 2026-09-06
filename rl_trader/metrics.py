@@ -41,7 +41,7 @@ def cagr(equity: pd.Series) -> float:
     if equity.empty:
         return 0.0
     total_return = equity.iloc[-1] / equity.iloc[0] - 1.0
-    print(pd.Timestamp(equity.index[-1]))
+
     days = (pd.Timestamp(equity.index[-1]) - pd.Timestamp(equity.index[0])).days
     if days <= 0:
         return float(total_return)

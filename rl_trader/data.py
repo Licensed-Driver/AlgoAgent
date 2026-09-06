@@ -123,13 +123,29 @@ def load_or_fetch_monthly(symbol: str, start: str, end: str, timeframe: str = "1
     out = out[~out.index.duplicated(keep="last")]
     return out
 
-def validate_data_cache(symbol: str, start:str, end:str):
-    s = pd.Timestamp(start)
-    e = pd.Timestamp(end)
+def validate_data_cache(symbol: str, start:str, end:str, timeframe: str = "1Min"):
+    s = pd.Timestamp(start, tz="EST")
+    e = pd.Timestamp(end, tz="EST")
     curr = s
-    while(curr.month != e.month):
-        validating = pd.read_parquet(f"data_cache/{symbol.capitalize()}/{symbol.capitalize()}_{curr.year}-{curr.month:02}_1Min.parquet")
-        cross_reference = fetch_alpaca_bars(symbol, f"{curr.year}-{curr.month}-01", f"{curr.year}-{curr.month}-{curr.days_in_month}")
+    while(curr.month != e.month or curr.year != e.year):
+        year = curr.year
+        month = curr.month
+        path = f"data_cache/{symbol}/{symbol}_{year}-{month:02}_{timeframe}.parquet"
+        if not os.path.exists(path):
+            print(f"Missing: {path}")
+        else:
+            try:
+                df = pd.read_parquet(path)
+                if df.empty:
+                    print(f"Empty: {path}")
+            except Exception as ex:
+                print(f"Corrupt: {path} ({ex})")
+
+        # Advance to next month
+        if curr.month == 12:
+            curr = curr.replace(year=curr.year + 1, month=1)
+        else:
+            curr = curr.replace(month=curr.month + 1)
 
 if __name__=="__main__":
     main()
