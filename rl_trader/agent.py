@@ -1,4 +1,5 @@
 from stable_baselines3 import PPO
+from sb3_contrib import RecurrentPPO
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 from stable_baselines3.common.callbacks import EvalCallback, StopTrainingOnNoModelImprovement
 import os
@@ -41,7 +42,7 @@ def train_ppo(
             clip_obs=vec_clip_obs,
             clip_reward=vec_clip_reward,
         )
-    model = PPO("MlpPolicy", env,
+    model = RecurrentPPO("MlpLstmPolicy", env,
                 learning_rate=learning_rate, gamma=gamma, gae_lambda=gae_lambda,
                 clip_range=clip_range, ent_coef=ent_coef, vf_coef=vf_coef,
                 n_steps=n_steps, batch_size=batch_size, n_epochs=n_epochs,

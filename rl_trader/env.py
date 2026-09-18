@@ -3,12 +3,8 @@ from gymnasium import spaces
 import numpy as np
 import pandas as pd
 from .fees import IBKRFeeModel
-from .reward import step_reward
+from .reward import step_reward, DifferentialSharpe
 import math
-
-BUY=0
-HOLD=1
-SELL=2
 
 class SingleTickerEnv(gym.Env):
     metadata = {"render_modes": []}
@@ -17,8 +13,7 @@ class SingleTickerEnv(gym.Env):
                  spread_bps: float = 2.0, slippage_bps: float = 0.0, max_position_pct: float = 1.0,
                  reward_mode: str = "pnl_raw", reward_scale: float | None = None,
                  fee_kwargs: dict | None = None, min_episode_len: int=512, max_episode_len: int=2048,
-                 spread_std_bps: float=0.5, slippage_std_bps: float=0.3, price_jitter_bps:float=0,
-                 do_nothing_penalty: float=0.0, double_action_penalty:float=0.0):
+                 spread_std_bps: float=0.5, slippage_std_bps: float=0.3, price_jitter_bps:float=0, step_size: int=1):
         super().__init__()
         if prices.index.nlevels == 1:
             dt_idx = prices.index
@@ -31,8 +26,12 @@ class SingleTickerEnv(gym.Env):
             features = features.copy()
             features.index = multi_idx
         assert prices.index.equals(features.index), "Prices and features must be aligned index"
-        self.prices = prices.astype(np.float32)  # Close as midprice
-        self.features = features.astype(np.float32)
+
+        self.prices = prices.astype(np.float32)
+
+        # Shift features a bar since we trade at the open and only know the last close
+        self.features = features.shift(1).fillna(0.0).astype(np.float32)
+
         self.spread_bps = spread_bps
         self.slippage_bps = slippage_bps
         self.initial_equity = float(initial_equity)
@@ -40,76 +39,73 @@ class SingleTickerEnv(gym.Env):
         self.reward_mode = reward_mode
         self.reward_scale = reward_scale
         self.fees = IBKRFeeModel(**(fee_kwargs or {}))
-        # Observation: feature vector + has a position
+
         self.obs_columns = list(self.features.columns)
-        # Features + positionSize + equity
-        self._obs_dim = len(self.obs_columns) + 2
+        # Features + gap + position pct + time of day
+        self._obs_dim = len(self.obs_columns) + 3
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(self._obs_dim,), dtype=np.float32)
-        # Action: Buy, hold, or sell one hot vector [_, _, _]
-        #self.action_space = spaces.Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32)
-        self.action_space = spaces.Discrete(3)
-        self.do_nothing_penalty = do_nothing_penalty
-        self.double_action_penalty = double_action_penalty
 
-        # Scheduled action
-        self._pend_action = 0
+        # Target portfolio %, -1 to 1
+        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
 
-        # Adding randomness for episode splitting
         self.min_episode_len = int(min_episode_len)
         self.max_episode_len = int(max_episode_len)
         self.spread_std_bps = float(spread_std_bps)
         self.slippage_std_bps = float(slippage_std_bps)
         self.price_jitter_bps = float(price_jitter_bps)
+        self.step_size = int(step_size)
 
-        # State
-        self._time = 0
-        self._start = 0
-        self._episode_start = 0
-        self._end = 0
-        self.cash = self.initial_equity
-        self.shares = 0.0
-        self._has_position = False
-        self.prev_begin_equity = self.initial_equity
-        self._prev_datetime = (0, 0)
-        self._days = self.prices.index.get_level_values("date").unique()
+        # Differential Sharpe state
+        eta = 0.01 if self.reward_mode == "differential_sharpe" else 1.0 / max_episode_len
+        self.dsr = DifferentialSharpe(eta=eta)
 
-        # Pre-compute day offsets for fast lookup
+        self.np_random = None
+
+        self._prices_np = self.prices.to_numpy(dtype=np.float32)
+        self._features_np = self.features.to_numpy(dtype=np.float32)
         day_counts = self.prices.groupby(level="date").size().to_numpy(dtype=np.int32)
         self._day_lengths = day_counts
         self._day_offsets = np.zeros_like(day_counts)
         if len(day_counts) > 1:
             np.cumsum(day_counts[:-1], out=self._day_offsets[1:])
-        # np array with close and open
-        self._prices_np = self.prices.to_numpy(dtype=np.float32, copy=True)
-        self._features_np = self.features.to_numpy(dtype=np.float32, copy=True)
+        self._days = self.prices.index.get_level_values("date").unique()
         self._time_levels = self.prices.index.levels[1]
-
-        # RNG holder
-        self.np_random = None
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
-        # make per-env RNG
         self.np_random, _ = gym.utils.seeding.np_random(seed)
 
-        # choose random amount of days for episode
         total_len = len(self._days)
-        ep_len = int(self.np_random.integers(self.min_episode_len, self.max_episode_len + 1))
-        if ep_len >= total_len:
-            ep_len = total_len - 1
-        ep_len = max(ep_len, 1)
-        max_start = max(0, total_len - ep_len)
-        self._start = int(self.np_random.integers(0, max_start + 1))
+
+        full_reset = (options and options.get("full_reset")) or getattr(self, "force_full_reset", False)
+
+        if full_reset:
+            # deterministically run the whole dataset
+            ep_len = total_len
+            self._start = 0
+            self._time = 0
+        else:
+            ep_len = int(self.np_random.integers(self.min_episode_len, self.max_episode_len + 1))
+            if ep_len >= total_len: ep_len = total_len - 1
+            ep_len = max(ep_len, 1)
+
+            # Start at 1 because index 0 has no "prev close" and features are shifted
+            max_start = max(1, total_len - ep_len)
+            self._start = int(self.np_random.integers(1, max_start + 1))
+
         self._episode_start = self._start
         self._end = min(self._start + ep_len - 1, total_len - 1)
 
-        self._time = 0
+        if not full_reset:
+             self._time = self.np_random.integers(0, self.step_size)
+        else:
+             self._time = 0
         self.cash = self.initial_equity
         self.shares = 0.0
-        self._has_position = False
-        self.prev_begin_equity = self.initial_equity
-        self._prev_datetime = (self._start, self._time)
-        self._pend_action = HOLD
+        # Reward is open to open
+        self._prev_equity_at_open = self.initial_equity
+        if self.reward_mode == "differential_sharpe":
+             self.dsr.reset()
 
         obs = self._obs()
         info = {
@@ -118,178 +114,128 @@ class SingleTickerEnv(gym.Env):
             "end": self._days[self._end],
         }
         return obs, info
-    
-    def _get_day_idx(self, idx: int):
-        return self._days[idx]
 
-    def _get_time_idx(self, idx: int):
-        return self._time_levels[idx]
-    
-    def _get_close(self, i, j):
-        base = self._day_offsets[i] + j
-        return self._prices_np[base][0]
-    
-    def _get_open(self, i, j):
-        base = self._day_offsets[i]+j
-        return self._prices_np[base][1]
-        
     def _get_close_now(self) -> float:
         mid = float(self._prices_np[self._day_offsets[self._start] + self._time][0])
-        if self.price_jitter_bps > 0.0:
+        if self.price_jitter_bps > 0:
             mid *= 1.0 + 1e-4 * self.price_jitter_bps * self.np_random.normal()
         return mid
-    
+
     def _get_open_now(self) -> float:
         mid = float(self._prices_np[self._day_offsets[self._start] + self._time][1])
-        if self.price_jitter_bps > 0.0:
+        if self.price_jitter_bps > 0:
             mid *= 1.0 + 1e-4 * self.price_jitter_bps * self.np_random.normal()
         return mid
-    
-    # To get the close of the previous timestep
+
     def _get_prev_close(self) -> float:
-        mid = float(self._prices_np[self._day_offsets[self._prev_datetime[0]] + self._prev_datetime[1]][0])
-        if self.price_jitter_bps > 0.0:
-            mid *= 1.0 + 1e-4 * self.price_jitter_bps * self.np_random.normal()
-        return mid
+        # Close of the last step, might be on the previous day
+        if self._time == 0:
+            prev_day_idx = self._start - 1
+            last_time_of_prev = self._day_lengths[prev_day_idx] - 1
+            idx = self._day_offsets[prev_day_idx] + last_time_of_prev
+        else:
+            idx = self._day_offsets[self._start] + (self._time - self.step_size)
+        return float(self._prices_np[idx][0])
 
     def _best_bid_ask(self, mid: float):
-        # randomize around mean spread/slippage
-        spread_bps = self.spread_bps + self.spread_std_bps * self.np_random.normal()
-        slip_bps = self.slippage_bps + self.slippage_std_bps * self.np_random.normal()
-        spread_bps = max(0.0, spread_bps)
-        slip_bps = max(0.0, slip_bps)
+        spread_bps = max(0.0, self.spread_bps + self.spread_std_bps * self.np_random.normal())
+        slip_bps = max(0.0, self.slippage_bps + self.slippage_std_bps * self.np_random.normal())
 
-        spread = mid * (spread_bps / 10_000.0)
-        bid = mid - 0.5 * spread
-        ask = mid + 0.5 * spread
-        slip = mid * (slip_bps / 10_000.0)
-        return bid - slip, ask + slip
+        # bps to decimal
+        half_spread = mid * (spread_bps * 0.5 / 10000.0)
+        slip = mid * (slip_bps / 10000.0)
 
-    """
-    The order here is basically:
-    - Observe at close of t-1 and decide on action
-    - Use that close to get the reward of the action_t-1 base on the quity before action_t-1
-    - Execute action on open of t (This requires custom environment implementation where step is called after open)
-    - Save information and return delayed reward of t-1
-    - Repeat
-    This way, the model never gains access to information past the current state, since in practice
-    we would observe at close and execute action at open right after, but wouldn't be able to get that reward right away.
-    So we observe, execute, and return the previous reward (so a reward delay of 1 step).
-    This is learned inherently by the agent, and therefore forces it to make a decision that it can't be immediately certain of, and
-    learn to predict what the reward would be based on a projection, instead of just knowing all relevant information to calculate it directly.
-    """
-    
+        bid = mid - half_spread - slip
+        ask = mid + half_spread + slip
+        return bid, ask
+
     def _obs(self):
         idx = self._day_offsets[self._start] + self._time
+
+        # Already lagged a bar in __init__
         x = self._features_np[idx]
-        close_now = self._get_close_now()
-        total_equity = self.shares * close_now + self.cash
-        #current_position = (self.shares * price_now) / total_equity
-        # State is features, and if you have a position, the position size, and your portfolio now
-        obs = np.concatenate((x, np.array([self._has_position, total_equity], dtype=np.float32)))
-        return obs.astype(np.float32, copy=False)
+
+        open_now = self._get_open_now()
+        prev_close = self._get_prev_close()
+
+        # Gap from the last close, since the features are a bar behind
+        gap = (open_now / prev_close) - 1.0
+
+        total_equity = self.cash + self.shares * open_now
+        current_pos_pct = (self.shares * open_now) / total_equity if total_equity > 1e-9 else 0.0
+        time_of_day = self._time / self._day_lengths[self._start]
+
+        # Raw equity left out since it's non-stationary
+        obs = np.concatenate((x, np.array([gap, current_pos_pct, time_of_day], dtype=np.float32)))
+        return obs
 
     def step(self, action):
-        if isinstance(action, (list, tuple)):
-            action = np.asarray(action)
-        if isinstance(action, np.ndarray):
-            action = int(action.item())
+        done = False
+
+        # We trade at the Open
+        price_now = self._get_open_now()
+        bid, ask = self._best_bid_ask(price_now)
+
+        equity_before_action = self.cash + self.shares * price_now
+
+        # Reward for the position held from the last open to this one
+        if self.reward_mode == "differential_sharpe":
+            ret = (equity_before_action - self._prev_equity_at_open) / max(self._prev_equity_at_open, 1e-9)
+            reward = self.dsr.step(ret)
+            if self.reward_scale:
+                reward = reward * float(self.reward_scale)
         else:
-            action = int(action)
-        # Determine reward based on open-close diff
-        # Execute pending action on the open price
-        open_now = self._get_open_now()
-        bid, ask = self._best_bid_ask(open_now)
-        reward = 0.0
+            reward = step_reward(self._prev_equity_at_open, equity_before_action, self.reward_mode, self.reward_scale)
 
-        target_shares=self.shares
-
-        #target_shares = math.floor((self.prev_equity * action)/mid)
-
-        change_position = False
-
-        # Execute the pending action
-        if self._pend_action == BUY:
-            if not self._has_position:
-                # Keep staked amount constant for now
-                change_position=True
-                target_shares = math.floor(1000 / open_now)
-                self._has_position = True
-            else:
-                reward = self.double_action_penalty
-        elif self._pend_action == HOLD:
-            reward = self.do_nothing_penalty
-        elif self._pend_action == SELL:
-            if self._has_position:
-                change_position = True
-                self._has_position = False
-                target_shares = 0.0
-            else:
-                reward = self.double_action_penalty
+        if isinstance(action, (list, tuple, np.ndarray)):
+            action_scalar = float(action[0])
         else:
-            raise ValueError(f"Invalid action: {self._pend_action}")
-        
-        # We get the equity at close of the previous bar so that we can get the delayed reward
-        # Conditional since the very first step of the episode can't have a previous close and therefore has 0 reward
-        prev_equity_after = self.cash + self.shares * self._get_prev_close() if self._prev_datetime!=(self._start, self._time) else self.prev_begin_equity
+            action_scalar = float(action)
 
-        # Add step_reward to keep any penalty from earlier
-        # We calculate the reward for the last episode using the equity before we made our last action and the equity at the close of the last bar
-        reward = reward + step_reward(self.prev_begin_equity, prev_equity_after, self.reward_mode, self.reward_scale)
+        # Long only, negative targets go flat
+        target_pct = np.clip(action_scalar, 0, 1.0)
+        target_equity_in_stock = target_pct * equity_before_action * self.max_position_pct
 
-        target_dollar = target_shares * open_now
-        current_dollar = self.shares * open_now
-        delta_dollar = target_dollar - current_dollar
-        equity_before = self.cash + self.shares * open_now
+        target_shares = math.floor(target_equity_in_stock / price_now) if target_equity_in_stock >= 0 else math.ceil(target_equity_in_stock / price_now)
 
-        # Get the equity before we make any actions here so that we can calculate total reward later
-        self.prev_begin_equity = equity_before
+        delta_shares = target_shares - self.shares
 
-        # Execute trade to move towards target
-        if change_position:
-            if delta_dollar > 0:
-                # Buy
-                shares_to_buy = delta_dollar / ask
-                # never exceed max_position_pct
-                max_pos_value = self.max_position_pct * equity_before
-                desired_value = min(target_dollar, max_pos_value)
-                shares_to_buy = max(0.0, (desired_value - current_dollar) / ask)
-                cost = shares_to_buy * ask
-                fee = self.fees.commission(shares_to_buy, ask)
-                if cost + fee > self.cash:
-                    # scale down to available cash
-                    shares_to_buy = max(0.0, (self.cash - fee) / ask)
-                    cost = shares_to_buy * ask
-                    fee = self.fees.commission(shares_to_buy, ask)
-                self.cash -= (cost + fee)
-                self.shares += shares_to_buy
-            else:
-                # Sell
-                shares_to_sell = (-delta_dollar) / bid
-                shares_to_sell = min(shares_to_sell, self.shares)
+        if delta_shares != 0:
+            if delta_shares > 0: # BUY
+                cost = delta_shares * ask
+                comm = self.fees.commission(abs(delta_shares), ask)
+                if self.cash >= (cost + comm):
+                    self.cash -= (cost + comm)
+                    self.shares += delta_shares
+                else:
+                    # Not enough cash for the full order, buy what we can afford
+                    max_shares = math.floor(self.cash / (ask + 0.01))
+                    if max_shares > 0:
+                         cost = max_shares * ask
+                         comm = self.fees.commission(max_shares, ask)
+                         if self.cash >= cost + comm:
+                             self.cash -= (cost + comm)
+                             self.shares += max_shares
+            else: # SELL
+                shares_to_sell = abs(delta_shares)
                 proceeds = shares_to_sell * bid
-                fee = self.fees.commission(shares_to_sell, bid)
-                self.cash += (proceeds - fee)
+                comm = self.fees.commission(shares_to_sell, bid)
+                self.cash += (proceeds - comm)
                 self.shares -= shares_to_sell
 
-        done = False
-        info = {"equity": equity_before, "action": self._pend_action}
+        equity_after_action = self.cash + self.shares * price_now
+        self._prev_equity_at_open = equity_after_action
 
-        # The datetime now so that next step we can get the close of this timestep
-        self._prev_datetime = (self._start, self._time)
-
-        # If the day is over, reset _time and advance the day
         current_day_len = self._day_lengths[self._start]
-        if self._time < current_day_len - 1:
-            self._time += 1
-        elif self._start >= self._end:
-            done = True
-        else:
-            self._time = 0
-            self._start += 1
+        self._time += self.step_size
 
-        # Our next step will execute the action we decided at this close on the next open
-        self._pend_action = action
+        # End of day, move to the next one at a random offset
+        if self._time >= current_day_len:
+            self._time = self.np_random.integers(0, self.step_size)
+            self._start += 1
+            if self._start > self._end:
+                done = True
+                self._start = self._end  # clamp so the final _obs() stays in range
 
         obs = self._obs()
-        return obs, float(reward), done, False, info
+        return obs, float(reward), done, False, {"equity": equity_after_action}
