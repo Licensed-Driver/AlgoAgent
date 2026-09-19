@@ -75,11 +75,12 @@ def main():
     ap.add_argument("--price_jitter_bps", type=float, default=None)
     ap.add_argument("--do_nothing_penalty", type=float, default=None)
     ap.add_argument("--double_action_penalty", type=float, default=None)
+    ap.add_argument("--step_size", type=int, default=None)
     args = ap.parse_args()
 
     # Load defaults from config.py, then let CLI override
     from rl_trader.config import EnvConfig, FeeConfig, PPOConfig, DataConfig, WalkConfig
-    env_cfg = EnvConfig(); fee_cfg = FeeConfig(); ppo_cfg = PPOConfig(); data_cfg = DataConfig(symbol="", start="", end=""); walk_cfg = WalkConfig()
+    env_cfg = EnvConfig(); fee_cfg = FeeConfig(); ppo_cfg = PPOConfig(); data_cfg = DataConfig(); walk_cfg = WalkConfig()
     # Data defaults
     if args.symbol is None: args.symbol = data_cfg.symbol
     if args.start is None: args.start = data_cfg.start
@@ -97,22 +98,18 @@ def main():
     if args.spread_std_bps is None: args.spread_std_bps = env_cfg.spread_std_bps
     if args.slippage_std_bps is None: args.slippage_std_bps = env_cfg.slippage_std_bps
     if args.price_jitter_bps is None: args.price_jitter_bps = env_cfg.price_jitter_bps
-    if args.do_nothing_penalty is None: args.do_nothing_penalty = env_cfg.do_nothing_penalty
-    if args.double_action_penalty is None: args.double_action_penalty = env_cfg.double_action_penalty
-    if args.reward_scale is None:
-        rs = env_cfg.reward_scale
-        if isinstance(rs, str):
-            if rs.lower() == "initial_equity":
-                args.reward_scale = args.initial_equity
-            elif rs.lower() in ("none", "null"):
-                args.reward_scale = None
-            else:
-                try:
-                    args.reward_scale = float(rs)
-                except Exception:
-                    args.reward_scale = None
+    if args.step_size is None: args.step_size = env_cfg.step_size
+    if args.reward_scale is None: args.reward_scale = env_cfg.reward_scale
+    if isinstance(args.reward_scale, str):
+        if args.reward_scale.lower() == "initial_equity":
+            args.reward_scale = args.initial_equity
+        elif args.reward_scale.lower() in ("none", "null"):
+            args.reward_scale = None
         else:
-            args.reward_scale = rs
+            try:
+                args.reward_scale = float(args.reward_scale)
+            except Exception:
+                args.reward_scale = None
     # Fee
     if args.fee_model is None: args.fee_model = fee_cfg.model
     if args.per_share is None: args.per_share = fee_cfg.per_share
@@ -146,6 +143,17 @@ def main():
     if args.n_steps is None: args.n_steps = ppo_cfg.n_steps
     if args.batch_size is None: args.batch_size = ppo_cfg.minibatch_size
     if args.n_epochs is None: args.n_epochs = ppo_cfg.n_epochs
+
+    # Bump envs and batch size on GPU if they weren't set
+    if args.device == "cuda":
+        print(">> GPU detected, raising throughput defaults.")
+        if args.sub_procs is None or args.sub_procs == ppo_cfg.n_envs:
+            args.sub_procs = 16
+            print(f"   -> sub_procs {args.sub_procs}")
+        if args.batch_size is None or args.batch_size == ppo_cfg.minibatch_size:
+            args.batch_size = 2048
+            print(f"   -> batch_size {args.batch_size}")
+
     # Walk-forward defaults
     if args.train_days is None: args.train_days = walk_cfg.train_days
     if args.valid_days is None: args.valid_days = walk_cfg.valid_days
@@ -159,8 +167,14 @@ def main():
     outdir.mkdir(exist_ok=True)
     wf_dir = outdir / "walk_forward"
 
-    if not args.symbol or not args.start or not args.end:
-        raise RuntimeError("Missing symbol/start/end (set in CLI or DataConfig)")
+    # Clear old saves
+    save_dir = Path("logs/saves")
+    if save_dir.exists():
+        import shutil
+        print(f"cleaning up old saves in {save_dir}...")
+        shutil.rmtree(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+
     print("=== 1) Fetching data (monthly cached) ===")
     try:
         from rl_trader.data import load_or_fetch_monthly
@@ -176,7 +190,7 @@ def main():
 
     print("=== 2) Building features ===")
     X = build_feature_matrix(df)
-    prices = df[['Close', 'Open']]
+    prices = df[['Close', 'Open']].loc[X.index]
 
     print("=== 3) Train on first 90% (avoid leakage) — raw profit scaled ===")
     date_index = prices.index.get_level_values("date")
@@ -217,15 +231,14 @@ def main():
                                slippage_bps=args.slippage_bps,
                                max_position_pct=args.max_position_pct,
                                reward_mode=args.reward_mode,
-                               reward_scale=args.reward_mode,
+                               reward_scale=args.reward_scale,
                                fee_kwargs=fee_kwargs,
                                min_episode_len=args.min_episode_len,
                                max_episode_len=args.max_episode_len,
                                spread_std_bps=args.spread_std_bps,
                                slippage_std_bps=args.slippage_std_bps,
                                price_jitter_bps=args.price_jitter_bps,
-                               do_nothing_penalty=args.do_nothing_penalty,
-                               double_action_penalty=args.double_action_penalty)
+                               step_size=args.step_size)
             env.reset(seed + rank)
             log_dir = "logs/monitor/"
             os.makedirs(log_dir, exist_ok=True)
@@ -239,15 +252,14 @@ def main():
                               slippage_bps=args.slippage_bps,
                               max_position_pct=args.max_position_pct,
                               reward_mode=args.reward_mode,
-                              reward_scale=args.reward_mode,
+                              reward_scale=args.reward_scale,
                               fee_kwargs=fee_kwargs,
                               min_episode_len=args.min_episode_len,
                               max_episode_len=args.max_episode_len,
                               spread_std_bps=args.spread_std_bps,
                               slippage_std_bps=args.slippage_std_bps,
                               price_jitter_bps=args.price_jitter_bps,
-                              do_nothing_penalty=args.do_nothing_penalty,
-                              double_action_penalty=args.double_action_penalty)
+                              step_size=args.step_size)
         env.reset(args.seed if args.seed is not None else 0)
         return env
     model = train_ppo(make_env,
@@ -269,7 +281,7 @@ def main():
                       vec_norm_obs=args.vec_norm_obs,
                       vec_norm_reward=args.vec_norm_reward,
                       eval_env_fn=make_eval_env)
-    
+
     # Plot episode rewards
     files = glob.glob("logs/monitor/*.monitor.csv")
     if files:

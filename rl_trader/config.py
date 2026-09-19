@@ -5,9 +5,9 @@ from collections.abc import Callable
 
 @dataclass
 class DataConfig:
-    symbol: str = "--NVDA"
-    start: str = "--2020-01-01"
-    end: str = "--2025-01-01"
+    symbol: str = "NVDA"
+    start: str = "2020-01-01"
+    end: str = "2025-01-01"
     timeframe: str = "1Min"
     limit: Optional[int] = None
     cache_dir: str = "data_cache"
@@ -15,13 +15,14 @@ class DataConfig:
 @dataclass
 class EnvConfig:
     window: int = 1
+    step_size: int = 15  # bars between agent actions
     spread_bps: float = 2.0  # bid/ask spread in basis points (0.01% = 1 bps)
     slippage_bps: float = 0.0
     initial_equity: float = 5000.0
     max_position_pct: float = 0.5  # long-only, cannot exceed equity
-    reward_mode: str = "pnl"  # 'pnl', 'pnl_raw', 'logpnl', 'sharpe_step'
+    reward_mode: str = "logpnl"  # 'pnl', 'pnl_raw', 'logpnl', 'sharpe_step'
     # Can be a float-like string (e.g., "10000"), "initial_equity", or "none"/"null"
-    reward_scale: str = "1000"
+    reward_scale: str = "none"
     min_episode_len: int=3
     max_episode_len: int=5
     spread_std_bps: float=0.5
@@ -44,16 +45,16 @@ class FeeConfig:
 class PPOConfig:
     total_timesteps: int = 10_000_000
     # Either a float or lambda that takes one argument (progress remaining 1-0) and returns the learning rate. Make sure you aren't dumb like me and don't do sqrt(0)
-    learning_rate: Callable[[float], float] = lambda x: 3e-4*math.sqrt(x) if x>0 else 0 
-    gamma: float = 0.999
+    learning_rate: Callable[[float], float] = lambda x: 3e-4*math.sqrt(x) if x>0 else 0
+    gamma: float = 0.95
     gae_lambda: float = 0.95
     clip_range: float = 0.2
     ent_coef: float = 1e-4
     vf_coef: float = 0.5
-    n_steps: int = 8192
+    n_steps: int = 2048
     minibatch_size: int = 512
     n_epochs: int = 8
-    eval_freq: int = 10_000_000
+    eval_freq: int = 2_000_000
     vec_norm_reward: bool = True
     vec_norm_obs: bool = True
     device: str = "cpu"  # 'cpu' or 'cuda'
