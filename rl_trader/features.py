@@ -8,6 +8,12 @@ import ta
 _EPS = 1e-9
 PI2 = 2 * math.pi
 
+# rv60_pct needs 60 bars for rv_60 and then 252 for the rank
+WARMUP_BARS = 311
+
+# Extra history per chunk so ATR/EMA/MACD converge to the same values as a full build
+PARALLEL_LOOKBACK = WARMUP_BARS + 1024
+
 def _get_time_index(idx: pd.Index) -> pd.DatetimeIndex:
     """
     Return a full DatetimeIndex.
@@ -26,16 +32,13 @@ def _get_time_index(idx: pd.Index) -> pd.DatetimeIndex:
         raise ValueError("Index must be DatetimeIndex or MultiIndex(date, time).")
 
 def _pct_rank(s: pd.Series, window: int) -> pd.Series:
-    # Percentile rank of the last value inside a rolling window (no peeking)
-    return s.rolling(window, min_periods=window).apply(
-        lambda x: pd.Series(x).rank(pct=True).iloc[-1], raw=False
-    )
+    # Min-max position in the window, way faster than a rolling rank
+    roll_min = s.rolling(window, min_periods=window).min()
+    roll_max = s.rolling(window, min_periods=window).max()
+    return (s - roll_min) / (roll_max - roll_min + _EPS)
 
 def _rolling_autocorr(s: pd.Series, window: int, lag: int = 1) -> pd.Series:
-    return s.rolling(window, min_periods=window).apply(
-        lambda x: (pd.Series(x).autocorr(lag) if pd.Series(x).std(ddof=0) > 0 else 0.0),
-        raw=False,
-    )
+    return s.rolling(window, min_periods=window).corr(s.shift(lag))
 
 def _safe_std(s: pd.Series, window: int) -> pd.Series:
     return s.rolling(window, min_periods=window).std()
@@ -67,17 +70,18 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     out["rv_60"]  = _safe_std(out["logret_1"], 60)
 
     # ---- ATR-normalized structure ----
-    out["range_atr"]    = (out["High"] - out["Low"]) / (atr14 + _EPS)
-    out["oc_atr"]       = (out["Close"] - out["Open"]).abs() / (atr14 + _EPS)
-    out["close_z_atr"]  = (out["Close"] - ema20) / (atr14 + _EPS)
+    inv_atr = 1.0 / (atr14 + _EPS)
+    out["range_atr"]    = (out["High"] - out["Low"]) * inv_atr
+    out["oc_atr"]       = (out["Close"] - out["Open"]).abs() * inv_atr
+    out["close_z_atr"]  = (out["Close"] - ema20) * inv_atr
 
     # ---- candle shape (wicks) + CLV ----
-    body_max = out[["Open", "Close"]].max(axis=1)
-    body_min = out[["Open", "Close"]].min(axis=1)
-    out["upper_wick_atr"] = (out["High"] - body_max) / (atr14 + _EPS)
-    out["lower_wick_atr"] = (body_min - out["Low"]) / (atr14 + _EPS)
-    out["clv"] = ((out["Close"] - out["Low"]) /
-                  ((out["High"] - out["Low"]).replace(0, np.nan) + _EPS)) * 2 - 1
+    body_max = np.maximum(out["Open"], out["Close"])
+    body_min = np.minimum(out["Open"], out["Close"])
+    out["upper_wick_atr"] = (out["High"] - body_max) * inv_atr
+    out["lower_wick_atr"] = (body_min - out["Low"]) * inv_atr
+    hl_rng = (out["High"] - out["Low"])
+    out["clv"] = ((out["Close"] - out["Low"]) / (hl_rng + _EPS)) * 2 - 1
 
     # ---- Bollinger distance + percentile position ----
     bb = ta.volatility.BollingerBands(close=out["Close"], window=20, fillna=False)
@@ -102,27 +106,31 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     # ---- advanced realized volatility estimators ----
     # Parkinson
-    hl = np.log((out["High"] / out["Low"]).replace(0, np.nan)) ** 2
-    out["rv_parkinson_20"] = (hl.rolling(20, min_periods=20).sum() / (4 * math.log(2))).pow(0.5)
+    log_h = np.log(out["High"].replace(0, np.nan))
+    log_l = np.log(out["Low"].replace(0, np.nan))
+    log_c = np.log(out["Close"].replace(0, np.nan))
+    log_o = np.log(out["Open"].replace(0, np.nan))
+
+    hl_sq = (log_h - log_l) ** 2
+    out["rv_parkinson_20"] = (hl_sq.rolling(20, min_periods=20).sum() / (4 * math.log(2))).pow(0.5)
 
     # Rogers–Satchell
-    co = np.log(out["Close"] / out["Open"]).replace([np.inf, -np.inf], np.nan)
-    uh = np.log(out["High"]  / out["Open"]).replace([np.inf, -np.inf], np.nan)
-    dl = np.log(out["Low"]   / out["Open"]).replace([np.inf, -np.inf], np.nan)
+    co = log_c - log_o
+    uh = log_h - log_o
+    dl = log_l - log_o
     rs = (uh * (uh - co) + dl * (dl - co)).clip(lower=0)
     out["rv_rs_20"] = rs.rolling(20, min_periods=20).sum().pow(0.5)
 
     # Yang–Zhang
     prev_close = out["Close"].shift(1)
-    o_rets = np.log(out["Open"]  / prev_close).replace([np.inf, -np.inf], np.nan)
-    c_rets = np.log(out["Close"] / out["Open"]).replace([np.inf, -np.inf], np.nan)
-    u = np.log(out["High"] / out["Open"]).replace([np.inf, -np.inf], np.nan)
-    d = np.log(out["Low"]  / out["Open"]).replace([np.inf, -np.inf], np.nan)
-    n = 20
-    k = 0.34 / (1 + n) + 0.00094
-    sigma_o2  = o_rets.rolling(n, min_periods=n).var()
-    sigma_c2  = c_rets.rolling(n, min_periods=n).var()
-    sigma_rs2 = (u * (u - c_rets) + d * (d - c_rets)).rolling(n, min_periods=n).mean()
+    o_rets = np.log(out["Open"] / prev_close)
+    c_rets = co
+
+    sigma_o2 = o_rets.rolling(20, min_periods=20).var()
+    sigma_c2 = c_rets.rolling(20, min_periods=20).var()
+    sigma_rs2 = rs.rolling(20, min_periods=20).mean()
+
+    k = 0.34 / (1 + 20) + 0.00094
     out["rv_yz_20"] = (sigma_o2 + k * sigma_c2 + (1 - k) * sigma_rs2).pow(0.5)
 
     # ---- percentile regime flags ----
@@ -131,9 +139,10 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     # ---- directional persistence & efficiency ----
     ret = out["logret_1"].fillna(0.0)
-    sign_change  = (np.sign(ret) != np.sign(ret.shift(1))).astype(int).cumsum()
-    streak_count = ret.groupby(sign_change).cumcount() + 1
-    out["streak"] = streak_count * np.sign(ret).replace(0, 1)
+    sign_ret = np.sign(ret)
+    sign_change = (sign_ret != sign_ret.shift(1)).cumsum()
+    out["streak"] = ret.groupby(sign_change).cumcount() + 1
+    out["streak"] = out["streak"] * sign_ret.replace(0, 1)
 
     change10  = out["Close"].diff(10).abs()
     volsum10  = out["Close"].diff().abs().rolling(10, min_periods=10).sum()
@@ -174,7 +183,7 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
         d_high = out["High"].groupby(session_key).cummax()
         d_low  = out["Low"].groupby(session_key).cummin()
-        d_rng  = (d_high - d_low).replace(0, np.nan)
+        d_rng  = (d_high - d_low)
 
         out["dist_vwap_atr"] = (out["Close"] - vwap) / (atr14 + _EPS)
         out["intraday_pos"]  = (out["Close"] - d_low) / (d_rng + _EPS) - 0.5
@@ -194,20 +203,19 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # ---- cyclical time features (using combined date+time) ----
     t = _get_time_index(out.index)
     minutes = t.hour * 60 + t.minute
-    out["tod_sin"] = np.sin(PI2 * minutes / (60 * 24))
-    out["tod_cos"] = np.cos(PI2 * minutes / (60 * 24))
+    time_factor = PI2 / (60 * 24)
+    out["tod_sin"] = np.sin(minutes * time_factor)
+    out["tod_cos"] = np.cos(minutes * time_factor)
     dow = t.dayofweek
-    out["dow_sin"] = np.sin(PI2 * dow / 7)
-    out["dow_cos"] = np.cos(PI2 * dow / 7)
+    day_factor = PI2 / 7
+    out["dow_sin"] = np.sin(dow * day_factor)
+    out["dow_cos"] = np.cos(dow * day_factor)
 
     # ---- clean-up: kill infs, drop warmup rows, then drop remaining NaNs ----
     out = out.replace([np.inf, -np.inf], np.nan)
 
-    # Largest window used ≈ 300 (rv_300). Trim initial warmup globally.
-    min_ready = 300
-    out = out.iloc[min_ready:]
-
-    # Drop remaining NaNs created by min_periods across features
+    # Drop warmup rows
+    out = out.iloc[WARMUP_BARS:]
     out = out.dropna(how="any")
 
     # Winsorize obvious z/ratio features to control tails (±6)
@@ -228,10 +236,69 @@ def build_feature_matrix(df: pd.DataFrame) -> pd.DataFrame:
     feats = add_indicators(df)
 
     # Toggle raw columns here. Keep Close/Open for sanity checks if you want.
-    DROP_COLS = {"High", "Low", "Volume", "dollar_vol"}  # remove raw structure-only anchors
+    # Also drop Open/Close/VWAP since raw prices are non-stationary
+    DROP_COLS = {"High", "Low", "Volume", "dollar_vol", "Open", "Close", "VWAP"}
     keep = [c for c in feats.columns if c not in DROP_COLS]
 
     # Final sanitation
     X = feats[keep].replace([np.inf, -np.inf], np.nan).dropna(how="any")
 
     return X
+
+
+def build_features_parallel(df: pd.DataFrame, num_workers: int = 4, chunk_size: int = 50000) -> pd.DataFrame:
+    """
+    Threaded version of build_feature_matrix. Splits on day boundaries, gives
+    each chunk PARALLEL_LOOKBACK bars of extra history, then keeps only each
+    chunk's own rows so the result matches a sequential build.
+    """
+    import concurrent.futures
+
+    n_rows = len(df)
+    lookback = PARALLEL_LOOKBACK
+
+    if n_rows <= lookback:
+        return build_feature_matrix(df)
+
+    session_keys = df.index.get_level_values(0) if isinstance(df.index, pd.MultiIndex) else df.index.normalize()
+    session_keys_np = session_keys.to_numpy()
+    is_new_day = np.concatenate(([True], session_keys_np[1:] != session_keys_np[:-1]))
+    day_start_indices = np.where(is_new_day)[0]
+
+    # (history_start, own_start, end) per chunk
+    chunk_specs = []
+    current_start = 0
+
+    while current_start < n_rows:
+        target_end = current_start + chunk_size
+        if target_end >= n_rows:
+            end_idx = n_rows
+        else:
+            valid_starts = day_start_indices[day_start_indices <= target_end]
+            if len(valid_starts) > 0 and valid_starts[-1] > current_start:
+                end_idx = valid_starts[-1]
+            else:
+                future_starts = day_start_indices[day_start_indices > current_start]
+                if len(future_starts) > 0:
+                    end_idx = future_starts[0]
+                else:
+                    end_idx = n_rows
+
+        overlap_start = max(0, current_start - lookback)
+        chunk_specs.append((overlap_start, current_start, end_idx))
+
+        current_start = end_idx
+
+    processed_chunks = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
+        futures = [
+            executor.submit(build_feature_matrix, df.iloc[hist:end].copy())
+            for hist, _, end in chunk_specs
+        ]
+        # Gather in submission order so the index stays sorted
+        for (_, own_start, end), future in zip(chunk_specs, futures):
+            feats = future.result()
+            own_rows = df.index[own_start:end]
+            processed_chunks.append(feats[feats.index.isin(own_rows)])
+
+    return pd.concat(processed_chunks, axis=0)
