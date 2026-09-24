@@ -45,8 +45,9 @@ class SingleTickerEnv(gym.Env):
         self._obs_dim = len(self.obs_columns) + 3
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(self._obs_dim,), dtype=np.float32)
 
-        # Target portfolio %, -1 to 1
-        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
+        # Target long exposure as a fraction of max_position_pct. Long only since
+        # borrow costs aren't modelled
+        self.action_space = spaces.Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32)
 
         self.min_episode_len = int(min_episode_len)
         self.max_episode_len = int(max_episode_len)
@@ -129,13 +130,34 @@ class SingleTickerEnv(gym.Env):
 
     def _get_prev_close(self) -> float:
         # Close of the last step, might be on the previous day
-        if self._time == 0:
-            prev_day_idx = self._start - 1
-            last_time_of_prev = self._day_lengths[prev_day_idx] - 1
-            idx = self._day_offsets[prev_day_idx] + last_time_of_prev
+        prev_time = self._time - self.step_size
+        if prev_time >= 0:
+            idx = self._day_offsets[self._start] + prev_time
+        elif self._start > 0:
+            prev_day = self._start - 1
+            idx = self._day_offsets[prev_day] + self._day_lengths[prev_day] - 1
         else:
-            idx = self._day_offsets[self._start] + (self._time - self.step_size)
+            # No previous close on the very first bar, so no gap
+            return self._get_open_now()
         return float(self._prices_np[idx][0])
+
+    def _max_affordable(self, ask: float) -> int:
+        # Most shares we can buy with the cash we have after commission
+        lo, hi = 0, int(self.cash // ask) if ask > 0 else 0
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if mid * ask + self.fees.commission(mid, ask) <= self.cash:
+                lo = mid
+            else:
+                hi = mid - 1
+        return lo
+
+    def _reward_from(self, prev_equity: float, new_equity: float) -> float:
+        if self.reward_mode == "differential_sharpe":
+            ret = (new_equity - prev_equity) / max(prev_equity, 1e-9)
+            reward = self.dsr.step(ret)
+            return reward * float(self.reward_scale) if self.reward_scale else reward
+        return step_reward(prev_equity, new_equity, self.reward_mode, self.reward_scale)
 
     def _best_bid_ask(self, mid: float):
         spread_bps = max(0.0, self.spread_bps + self.spread_std_bps * self.np_random.normal())
@@ -178,44 +200,26 @@ class SingleTickerEnv(gym.Env):
 
         equity_before_action = self.cash + self.shares * price_now
 
-        # Reward for the position held from the last open to this one
-        if self.reward_mode == "differential_sharpe":
-            ret = (equity_before_action - self._prev_equity_at_open) / max(self._prev_equity_at_open, 1e-9)
-            reward = self.dsr.step(ret)
-            if self.reward_scale:
-                reward = reward * float(self.reward_scale)
-        else:
-            reward = step_reward(self._prev_equity_at_open, equity_before_action, self.reward_mode, self.reward_scale)
+        # Reward for the position held from the last open to this one, including its costs
+        reward = self._reward_from(self._prev_equity_at_open, equity_before_action)
 
         if isinstance(action, (list, tuple, np.ndarray)):
             action_scalar = float(action[0])
         else:
             action_scalar = float(action)
 
-        # Long only, negative targets go flat
-        target_pct = np.clip(action_scalar, 0, 1.0)
+        target_pct = float(np.clip(action_scalar, 0.0, 1.0))
         target_equity_in_stock = target_pct * equity_before_action * self.max_position_pct
-
-        target_shares = math.floor(target_equity_in_stock / price_now) if target_equity_in_stock >= 0 else math.ceil(target_equity_in_stock / price_now)
+        target_shares = math.floor(max(0.0, target_equity_in_stock) / price_now)
 
         delta_shares = target_shares - self.shares
 
         if delta_shares != 0:
             if delta_shares > 0: # BUY
-                cost = delta_shares * ask
-                comm = self.fees.commission(abs(delta_shares), ask)
-                if self.cash >= (cost + comm):
-                    self.cash -= (cost + comm)
-                    self.shares += delta_shares
-                else:
-                    # Not enough cash for the full order, buy what we can afford
-                    max_shares = math.floor(self.cash / (ask + 0.01))
-                    if max_shares > 0:
-                         cost = max_shares * ask
-                         comm = self.fees.commission(max_shares, ask)
-                         if self.cash >= cost + comm:
-                             self.cash -= (cost + comm)
-                             self.shares += max_shares
+                shares_to_buy = min(delta_shares, self._max_affordable(ask))
+                if shares_to_buy > 0:
+                    self.cash -= shares_to_buy * ask + self.fees.commission(shares_to_buy, ask)
+                    self.shares += shares_to_buy
             else: # SELL
                 shares_to_sell = abs(delta_shares)
                 proceeds = shares_to_sell * bid
@@ -224,7 +228,9 @@ class SingleTickerEnv(gym.Env):
                 self.shares -= shares_to_sell
 
         equity_after_action = self.cash + self.shares * price_now
-        self._prev_equity_at_open = equity_after_action
+
+        # Use pre-trade equity so this step's costs show up in the next reward
+        self._prev_equity_at_open = equity_before_action
 
         current_day_len = self._day_lengths[self._start]
         self._time += self.step_size
@@ -236,6 +242,10 @@ class SingleTickerEnv(gym.Env):
             if self._start > self._end:
                 done = True
                 self._start = self._end  # clamp so the final _obs() stays in range
+
+        if done:
+            # Last step, so charge its costs now
+            reward += self._reward_from(equity_before_action, equity_after_action)
 
         obs = self._obs()
         return obs, float(reward), done, False, {"equity": equity_after_action}
