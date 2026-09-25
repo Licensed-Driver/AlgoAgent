@@ -3,7 +3,11 @@
 A production‑ready template for training a single‑ticker reinforcement learning (RL) trader
 entirely via backtesting. It pulls OHLCV data from the Alpaca API, adds many technical
 indicators, simulates realistic execution with **bid/ask spread** and **IBKR commission
-models**, and trains a **PPO** agent (Stable‑Baselines3) inside a **Gymnasium** environment.
+models**, and trains a **RecurrentPPO** agent (sb3-contrib) inside a **Gymnasium** environment.
+
+The agent sees features up to the close of bar `t-1` and trades at the open of bar `t`.
+Its action is how much of the allowed position to hold, from 0 to 1, and its reward is the
+open-to-open PnL of that position after spread and commission.
 
 ## Highlights
 
@@ -12,7 +16,7 @@ models**, and trains a **PPO** agent (Stable‑Baselines3) inside a **Gymnasium*
 - **Risk-aware training:** position limits so equity is never exceeded; optional reward shapes.
 - **Feature pipeline:** dozens of TA indicators, normalization, missing‑value handling.
 - **Reproducible experiments:** configs, seeds, logging, and model checkpointing.
-- **Tests** for the fee model and environment accounting.
+- **Tests** for the fee model, environment accounting, causality, and feature correctness.
 - **Modern Python packaging** via `pyproject.toml`.
 
 ## Quickstart
@@ -53,11 +57,20 @@ models**, and trains a **PPO** agent (Stable‑Baselines3) inside a **Gymnasium*
 
 6. **Evaluate & plot**:
 
-   Use a saved dataset and trained model file:
+   Pass the symbol and date range. Data comes from the monthly cache, and saved feature
+   stats and VecNormalize are loaded if they exist.
 
    ```bash
-   python -m scripts.evaluate --data artifacts/data_AAPL_2024-01-01_2024-06-01_1Min.parquet \
-       --model models/ppo_auto_single_ticker.zip
+   python -m scripts.evaluate --model_path models/ppo_auto_single_ticker.zip \
+       --symbol AAPL --start 2024-01-01 --end 2024-06-01
+   ```
+
+   Add `--live` to plot equity against buy-and-hold as it runs.
+
+7. **Run the tests**:
+
+   ```bash
+   pytest
    ```
 
 ## Fee Model (IBKR‑style)
@@ -76,7 +89,23 @@ need precise replication for production.
 - This codebase **does not place live trades**. It is for backtesting / research.
 - The Alpaca data function retrieves historical bars via REST. Provide your keys and a base URL.
 - Spread and slippage are **simulated** and configurable.
-- Rewards support multiple shapes; default is step‑wise PnL change divided by starting equity.
+- Rewards support multiple shapes; the default is the log return of equity open-to-open.
+- The environment is **long-only**. Borrow costs and margin aren't modelled, so shorting is
+  left out for now.
+
+## What the tests check
+
+- **No lookahead.** Changing prices after time `t` doesn't change any observation up to `t`
+  (`test_observations_ignore_future_prices`), and cutting off the end of the data doesn't
+  change earlier features (`test_features_do_not_use_future_bars`).
+- **Costs hit the reward.** Over a full episode the rewards add up to the change in equity
+  (`test_reward_stream_equals_realized_pnl`), and trading in and out on flat prices loses
+  reward (`test_churn_on_flat_prices_is_punished`).
+- **Parallel features match.** The threaded feature builder gives the same output as the
+  sequential one (`test_parallel_matches_sequential`).
+- **Limits hold.** Position size stays under `max_position_pct` and cash never goes
+  negative, even with a minimum commission per order.
+- **Every action counts.** Each action value gives a different position size.
 
 
 
@@ -85,5 +114,5 @@ need precise replication for production.
 ```bash
 python -m scripts.auto_pipeline --symbol AAPL --start 2023-01-01 --end 2025-01-01
 ```
-This will: fetch data → build features → train PPO on the first 90% (reward = **raw profit scaled by initial equity**) → evaluate on the last 10% → run a walk-forward study and save equity curves under `artifacts/`.
+This will: fetch data → build features → train RecurrentPPO on the first 90% → evaluate on the last 10% → run a walk-forward study and save equity curves under `artifacts/`.
 WARNING: This command will pull and cache 2 years of 1Min resolution ticker data from the AAPL stock, which may take up a non-negligible amount of space. Just please be aware of that.

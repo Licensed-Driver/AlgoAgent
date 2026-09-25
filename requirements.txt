@@ -22,3 +22,6 @@ matplotlib>=3.8.4
 
 # Alpaca (data)
 alpaca-py>=0.21.0
+
+# Tests
+pytest>=7.0.0

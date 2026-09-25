@@ -11,4 +11,9 @@ requires-python = ">=3.10"
 authors = [{name = "Layne Pitman"}]
 
 [tool.setuptools.packages.find]
-where = ["rl_trader"]
+where = ["."]
+include = ["rl_trader*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
